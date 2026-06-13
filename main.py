@@ -103,7 +103,7 @@ async def send_new_dashboard(chat_id: int):
 
 
 # Background processing tasks
-async def task_compile_voice_notes(chat_id: int, note_ids: list, settings: dict):
+async def task_compile_voice_notes(chat_id: int, note_ids: list, settings: dict, sender: dict = None):
     """Background task to run audio segmentation, parallel concepts extraction and synthesis."""
     try:
         # Fetch actual notes from database to pass records
@@ -120,7 +120,8 @@ async def task_compile_voice_notes(chat_id: int, note_ids: list, settings: dict)
             "associated_voice_note_ids": [n.get("telegram_message_id") for n in notes],
             "generated_article_hindi": article,
             "created_at": datetime.now(),
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "sender": sender
         }
         await save_article(article_doc)
         
@@ -139,7 +140,7 @@ async def task_compile_voice_notes(chat_id: int, note_ids: list, settings: dict)
         # Refresh dashboard layout
         await refresh_dashboard(chat_id)
 
-async def task_compile_image(chat_id: int, file_id: str, mime_type: str, settings: dict):
+async def task_compile_image(chat_id: int, file_id: str, mime_type: str, settings: dict, sender: dict = None):
     """Background task to extract document text via OCR and synthesize news."""
     try:
         article = await supervisor.compile_image_document(file_id, mime_type, settings)
@@ -150,7 +151,8 @@ async def task_compile_image(chat_id: int, file_id: str, mime_type: str, setting
             "telegram_file_id": file_id,
             "generated_article_hindi": article,
             "created_at": datetime.now(),
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "sender": sender
         }
         await save_article(article_doc)
         await send_message(chat_id, article)
@@ -158,7 +160,7 @@ async def task_compile_image(chat_id: int, file_id: str, mime_type: str, setting
         logger.error(f"Error compiling image OCR: {e}")
         await send_message(chat_id, f"❌ दस्तावेज़ विश्लेषण विफल रहा: {str(e)}")
 
-async def task_compile_topic(chat_id: int, topic: str, settings: dict):
+async def task_compile_topic(chat_id: int, topic: str, settings: dict, sender: dict = None):
     """Background task to search real-time verified data and compile news."""
     try:
         article = await supervisor.compile_topic_search(topic, settings)
@@ -169,7 +171,8 @@ async def task_compile_topic(chat_id: int, topic: str, settings: dict):
             "topic": topic,
             "generated_article_hindi": article,
             "created_at": datetime.now(),
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "sender": sender
         }
         await save_article(article_doc)
         await send_message(chat_id, article)
@@ -177,7 +180,7 @@ async def task_compile_topic(chat_id: int, topic: str, settings: dict):
         logger.error(f"Error compiling topic news: {e}")
         await send_message(chat_id, f"❌ विषय विश्लेषण विफल रहा: {str(e)}")
 
-async def task_compile_trends(chat_id: int, settings: dict):
+async def task_compile_trends(chat_id: int, settings: dict, sender: dict = None):
     """Background task to fetch top trends and synthesize news."""
     try:
         article = await supervisor.compile_top_trends(settings)
@@ -187,7 +190,8 @@ async def task_compile_trends(chat_id: int, settings: dict):
             "source_type": "top_trends",
             "generated_article_hindi": article,
             "created_at": datetime.now(),
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "sender": sender
         }
         await save_article(article_doc)
         await send_message(chat_id, article)
@@ -211,12 +215,19 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             data = callback["data"]
             
             # Security verification
-            if Config.ALLOWED_CHAT_ID and str(chat_id) != str(Config.ALLOWED_CHAT_ID):
+            if not Config.is_chat_allowed(chat_id):
                 logger.warn(f"Ignored callback from unauthorized chat ID: {chat_id}")
                 await answer_callback_query(callback_id, "Unauthorized chat", show_alert=True)
                 return {"ok": True}
                 
             settings = await get_chat_settings(chat_id)
+            from_user = callback.get("from", {})
+            sender_info = {
+                "user_id": from_user.get("id"),
+                "username": from_user.get("username"),
+                "first_name": from_user.get("first_name"),
+                "last_name": from_user.get("last_name")
+            }
             
             if data == "compile_voice":
                 pending_notes = await get_pending_voice_notes(chat_id)
@@ -242,7 +253,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 )
                 
                 # Add background job
-                background_tasks.add_task(task_compile_voice_notes, chat_id, note_ids, settings)
+                background_tasks.add_task(task_compile_voice_notes, chat_id, note_ids, settings, sender_info)
                 
             elif data == "ocr_info":
                 await answer_callback_query(callback_id)
@@ -255,7 +266,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             elif data == "run_trends":
                 await answer_callback_query(callback_id, "स्थानीय समाचार रुझानों का विश्लेषण शुरू हो रहा है...")
                 await send_message(chat_id, f"🌍 **सक्रिय रुझान:**\n\nस्थान: `{settings['location']}`\nश्रेणी: `{settings['department']}`\nके लिए नवीनतम समाचारों की खोज की जा रही है...")
-                background_tasks.add_task(task_compile_trends, chat_id, settings)
+                background_tasks.add_task(task_compile_trends, chat_id, settings, sender_info)
                 
             return {"ok": True}
 
@@ -267,11 +278,20 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         chat_id = message["chat"]["id"]
         
         # Whitelist filtering
-        if Config.ALLOWED_CHAT_ID and str(chat_id) != str(Config.ALLOWED_CHAT_ID):
+        if not Config.is_chat_allowed(chat_id):
             logger.warn(f"Ignored message from unauthorized chat ID: {chat_id}")
             return {"ok": True}
             
         settings = await get_chat_settings(chat_id)
+        
+        # Extract sender information
+        from_user = message.get("from", {})
+        sender_info = {
+            "user_id": from_user.get("id"),
+            "username": from_user.get("username"),
+            "first_name": from_user.get("first_name"),
+            "last_name": from_user.get("last_name")
+        }
         
         # 1. Handle Voice Notes / Audio Files
         file_id = None
@@ -294,7 +314,8 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "telegram_file_id": file_id,
                 "mime_type": mime_type,
                 "received_at": datetime.fromtimestamp(message["date"]),
-                "status": "pending"
+                "status": "pending",
+                "sender": sender_info
             }
             # Attempt to save. If it is a duplicate message, it returns False
             saved = await save_voice_note(note_doc)
@@ -315,7 +336,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             file_id = photo["file_id"]
             
             await send_message(chat_id, "📸 **दस्तावेज़ की फ़ोटो प्राप्त हुई!**\n\nOCR और समाचार विश्लेषण प्रारंभ हो रहा है... कृपया प्रतीक्षा करें।")
-            background_tasks.add_task(task_compile_image, chat_id, file_id, "image/jpeg", settings)
+            background_tasks.add_task(task_compile_image, chat_id, file_id, "image/jpeg", settings, sender_info)
             return {"ok": True}
         
         elif "document" in message and message["document"].get("mime_type", "").startswith("image/"):
@@ -323,7 +344,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             mime_type = message["document"]["mime_type"]
             
             await send_message(chat_id, "📸 **दस्तावेज़ प्राप्त हुआ!**\n\nOCR और समाचार विश्लेषण प्रारंभ हो रहा है... कृपया प्रतीक्षा करें।")
-            background_tasks.add_task(task_compile_image, chat_id, file_id, mime_type, settings)
+            background_tasks.add_task(task_compile_image, chat_id, file_id, mime_type, settings, sender_info)
             return {"ok": True}
 
         # 3. Handle Commands and Text Messages
@@ -349,7 +370,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 return {"ok": True}
                 
             await send_message(chat_id, f"⏳ *{len(pending_notes)}* वॉयस नोट्स का विश्लेषण शुरू हो रहा है...")
-            background_tasks.add_task(task_compile_voice_notes, chat_id, note_ids, settings)
+            background_tasks.add_task(task_compile_voice_notes, chat_id, note_ids, settings, sender_info)
             
         elif text.startswith("/topic"):
             # Command syntax: /topic <topic string>
@@ -359,7 +380,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 return {"ok": True}
                 
             await send_message(chat_id, f"🔍 **'{topic_query}'** पर समाचार और तथ्य संकलित किए जा रहे हैं...")
-            background_tasks.add_task(task_compile_topic, chat_id, topic_query, settings)
+            background_tasks.add_task(task_compile_topic, chat_id, topic_query, settings, sender_info)
             
         elif text.startswith("/location"):
             loc = text[len("/location"):].strip()
