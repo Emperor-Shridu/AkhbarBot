@@ -4,6 +4,7 @@ from agents.audio import AudioChunkAgent
 from agents.ocr import OCRAgent
 from agents.trend import TrendAgent
 from agents.editor import EditorAgent
+from utils.social_audio import extract_audio_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,63 @@ class SupervisorAgent:
         )
         return article
 
+    async def compile_audio_bytes(self, audio_bytes: bytes, mime_type: str, settings: dict, source_id: str = "whatsapp_audio") -> str:
+        logger.info("Supervisor: Initiating WhatsApp audio compilation...")
+        chunk_summaries = await self.audio_agent.analyze_audio_bytes(
+            audio_bytes=audio_bytes,
+            mime_type=mime_type,
+            timestamp=datetime.now(),
+            source_id=source_id,
+        )
+        consolidated = ""
+        for idx, summary in enumerate(chunk_summaries):
+            consolidated += f"\n--- Audio Segment Analysis #{idx + 1} ---\n{summary}\n"
+        return await self.editor_agent.synthesize(
+            source_type="Audio to News",
+            consolidated_context=consolidated,
+            settings=settings,
+        )
+
+    async def compile_image_bytes(self, image_bytes: bytes, mime_type: str, settings: dict) -> str:
+        logger.info("Supervisor: Initiating WhatsApp OCR compilation...")
+        ocr_result = await self.ocr_agent.extract_text_from_bytes(image_bytes, mime_type)
+        return await self.editor_agent.synthesize(
+            source_type="Document or Photo OCR to News",
+            consolidated_context=ocr_result,
+            settings=settings,
+        )
+
+    async def compile_social_link(self, url: str, settings: dict) -> str:
+        logger.info("Supervisor: Initiating social media link compilation for %s", url)
+        audio_bytes, mime_type = await extract_audio_from_url(url)
+        audio_summaries = await self.audio_agent.analyze_audio_bytes(
+            audio_bytes=audio_bytes,
+            mime_type=mime_type,
+            timestamp=datetime.now(),
+            source_id=url,
+        )
+
+        location = settings.get("location", "Delhi")
+        department = settings.get("department", "General")
+        language = settings.get("language", "Hindi")
+        link_research = await self.trend_agent.research_social_link(
+            url=url,
+            location=location,
+            department=department,
+            language=language,
+            timestamp=datetime.now(),
+        )
+
+        consolidated = f"--- Link Verification ---\n{link_research}\n"
+        for idx, summary in enumerate(audio_summaries):
+            consolidated += f"\n--- Extracted Audio Analysis #{idx + 1} ---\n{summary}\n"
+
+        return await self.editor_agent.synthesize(
+            source_type=f"Social Media Audio Link: {url}",
+            consolidated_context=consolidated,
+            settings=settings,
+        )
+
     async def compile_topic_search(self, topic: str, settings: dict) -> str:
         """
         Coordinates the Topic-to-News pipeline:
@@ -84,35 +142,6 @@ class SupervisorAgent:
         article = await self.editor_agent.synthesize(
             source_type=f"Topic Research: {topic}",
             consolidated_context=research_result,
-            settings=settings
-        )
-        return article
-
-    async def compile_top_trends(self, settings: dict) -> str:
-        """
-        Coordinates the Local Trends-to-News pipeline:
-        1. Invokes TrendAgent to fetch the top 5 location trends with search grounding.
-        2. Invokes EditorAgent to synthesize the Hindi news report.
-        """
-        location = settings.get("location", "Delhi")
-        department = settings.get("department", "General")
-        language = settings.get("language", "Hindi")
-        now = datetime.now()
-        
-        logger.info(f"Supervisor: Initiating local trends compilation for {location} ({department})...")
-        
-        # Step 1: Fetch Trends
-        trends_result = await self.trend_agent.fetch_local_trends(
-            location=location,
-            department=department,
-            language=language,
-            timestamp=now
-        )
-        
-        # Step 2: Editorial Synthesis
-        article = await self.editor_agent.synthesize(
-            source_type=f"Top Local Trends for {location}",
-            consolidated_context=trends_result,
             settings=settings
         )
         return article

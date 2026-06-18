@@ -1,0 +1,16 @@
+# Prompt and Interaction Source of Truth
+
+Active LLM prompts/gems live in:
+
+- `prompts.py`
+
+Active user-facing WhatsApp and Telegram interaction text lives in:
+
+- `user_interactions.py`
+
+Do not add new production prompts or channel copy directly inside webhook handlers or agents. Keep the application methodology limited to:
+
+1. Audio to news.
+2. Social video/audio link to news using `yt-dlp` audio extraction.
+3. Document/photo OCR to news article.
+4. Text to news article.

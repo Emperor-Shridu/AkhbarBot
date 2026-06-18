@@ -1,122 +1,76 @@
-# AkhbarBot v2: Technical Implementation & System Design Guide
+# AkhbarBot v3: Dual-Channel Implementation Guide
 
-This guide details the architectural decisions, database modeling, concurrency controls, and AI prompt engineering implemented in **AkhbarBot v2 (Python Multi-Agent Edition)**.
+## Core Methodology
 
----
+The product is constrained to four user paths only:
 
-## 1. Architectural Decisions & Tradeoffs
+1. Audio to news.
+2. Facebook/other social media video or audio link to news through `yt-dlp` audio extraction.
+3. Document/photo OCR to news article.
+4. Text to news article.
 
-### A. Custom Async Engine vs. CrewAI / LangGraph
-* **Decision:** Built a custom asynchronous engine using Python's native `asyncio` and the raw `google-genai` SDK, bypassing heavy agentic frameworks.
-* **Reasoning:** 
-  * Frameworks like CrewAI or LangGraph add substantial package overhead, pushing the deployment bundle size close to or beyond serverless execution limits (e.g., Vercel's 500 MB limit).
-  * Standard agent frameworks introduce considerable bootstrap time and internal routing layers. In serverless environments, this overhead directly causes longer cold starts and increased execution time (higher costs).
-  * Direct asynchronous calls via `client.aio` combined with explicit supervisor orchestration provide absolute control over concurrency, latency, and error boundaries.
+The old pending voice-note compile queue and top-local-trends mode are no longer part of the primary methodology. WhatsApp Business API and Telegram are both channel layers; WhatsApp Flow/list UI and Telegram inline buttons are intake helpers; Gemini agents remain the shared content intelligence layer.
 
-### B. Pure-Python Ogg Segmenter vs. Pydub/FFmpeg
-* **Decision:** Implemented a binary search parser for Ogg container files directly in Python (`utils/ogg_splitter.py`), segmenting streams by page boundaries.
-* **Reasoning:**
-  * Segmenting files longer than 3 minutes (up to 10 minutes) into 60-second chunks is critical to parallelize Gemini transcription requests and fit within serverless execution windows.
-  * Standard audio libraries like Pydub require an underlying `ffmpeg` binary. Packaging and running `ffmpeg` in a Vercel serverless environment is highly complex and easily balloons the package size.
-  * By reading Ogg page boundaries directly (detecting the `OggS` sync markers, extracting header pages, and grouping stream pages), we segment files natively in under 10 milliseconds with zero external binaries.
+## Architecture Decisions
 
-### C. Native Google Search Grounding vs. Third-Party Search APIs
-* **Decision:** Configured the Trend Agent using Gemini's native Search Grounding tool (`tools=[{"google_search": {}}]`).
-* **Reasoning:**
-  * Avoids managing API key credentials, rate limits, and billing setups for external search engines like Tavily or Serper.
-  * Google Search grounding returns factual references integrated directly into the LLM prompt context, reducing system complexity and improving verification speed.
+### Same backend for WhatsApp and Telegram
 
-### D. Async MongoDB Driver (Motor) vs. PyMongo
-* **Decision:** Motor (`motor.motor_asyncio`) for connection pooling and non-blocking queries.
-* **Reasoning:**
-  * PyMongo blocks the executing thread during database requests, which severely hurts FastAPI concurrency under load.
-  * Motor enables complete non-blocking operations, utilizing a shared connection pool cached inside FastAPI's event loop.
+WhatsApp support was added for the Indian deployment context because Telegram access can be banned or restricted, but the existing functional Telegram bot remains useful where available. The app exposes Meta webhook verification through `GET /api/webhook`, receives WhatsApp message events through `POST /api/webhook`, and receives Telegram updates through `POST /api/telegram-webhook`. Both channels route into the same `SupervisorAgent`.
 
----
+### WhatsApp Flows and list fallback
 
-## 2. Concurrency & Reliability Design Patterns
+`utils/whatsapp.py` sends a WhatsApp Flow when `WHATSAPP_FLOW_ID` is configured. If no Flow is configured, it sends a WhatsApp interactive list with the same four paths. This keeps local development and production setup practical while preserving the WhatsApp-native intake design.
 
-### A. Webhook Deduplication (At-Least-Once Delivery Guard)
-* **Problem:** Telegram webhooks guarantee at-least-once delivery. In case of transient network issues, Telegram will retry sending identical message payloads, leading to double-synthesis API charges.
-* **Solution:** A database-level compound unique index on `{ "telegram_message_id": 1, "chat_id": 1 }` in the `voice_notes` collection. Duplicate webhook payloads automatically trigger a MongoDB `DuplicateKeyError` (code `11000`), which FastAPI catches and discards, returning `200 OK` instantly.
+### Telegram support without extra methodology
 
-### B. State-Locking Pattern (Double Compilation Prevention)
-* **Problem:** If a user clicks the "Voice Notes" compile button multiple times in rapid succession, parallel webhook invocations would retrieve the same pending records, running redundant Gemini tasks.
-* **Solution:**
-  1. When a compilation request starts, the system synchronously queries and updates the target notes to `status: "processing"` using an atomic MongoDB update query.
-  2. If the modified document count is `0` (due to another thread already processing them), the request exits immediately.
-  3. The request spawns a FastAPI background task to download, segment, and synthesize.
-  4. On success: Notes are updated to `status: "processed"`.
-  5. On exception: A rollback block restores the status to `status: "pending"`, ensuring the user can retry compilation.
+Telegram support uses the same four paths as WhatsApp. Audio/photo/text/link messages are processed immediately; no separate pending queue or trends mode is reintroduced.
 
----
+### Prompt and text separation
 
-## 3. Dedicated Prompts Section
+All LLM prompts/gems are centralized in `prompts.py`. All user-facing interaction text is centralized in `user_interactions.py`. This makes editorial tuning and WhatsApp copy changes possible without hunting through webhook logic.
 
-Below are the exact prompt templates utilized by the specialized agents for further tweaking and refinement.
+### Social link extraction
 
-### A. Audio Ingestion / Chunk Agent Prompt
-* **Location:** `agents/audio.py`
-```text
-You are an expert audio transcription and factual analysis agent.
-Analyze this audio clip (Segment #{chunk_index}, recorded at: {timestamp.isoformat()}).
-Your tasks are:
-1. Transcribe the audio clearly and accurately in Hindi.
-2. Extract all key facts, including entity names (people, organizations), locations, dates/times, and core events mentioned.
-3. Highlight any legal allegations, quotes, or numbers.
-Strictly adhere ONLY to the facts present in the audio. Do not summarize outside this audio fragment.
-```
+`utils/social_audio.py` uses `yt-dlp` to download the best available public audio for social-media URLs. The extracted audio is passed through the same audio factual extraction agent, then combined with search-grounded URL verification before final article writing.
 
-### B. OCR / Document Agent Prompt
-* **Location:** `agents/ocr.py`
-```text
-You are an expert Document OCR and entity extraction agent.
-Analyze the uploaded document image.
-Your tasks are:
-1. Perform OCR and extract all readable text. Maintain original layout or flow where possible.
-2. Extract key entities: Person names, organizations, departments, locations, dates/times, and numbers.
-3. Draft a clean, structured factual summary in Hindi outlining the core matter of the document.
-Do not hallucinate or add any details not explicitly visible in the document.
-```
+### Serverless-friendly agent core
 
-### C. Trend Agent - Local Trends Prompt
-* **Location:** `agents/trend.py`
-```text
-You are a professional local news investigator.
-Using Google Search, fetch the top 5 current, active local news trends/events for the location: '{location}'.
-Focus on the department/domain: '{department}'.
-Active Timestamp: {timestamp_str}.
-Output a fact-verified summary of exactly 5 distinct news entries. For each entry, specify the key event, names, dates, and verified facts.
-Provide the response in {language}.
-```
+The existing custom async engine remains. It avoids heavy orchestration frameworks, uses Gemini directly, keeps MongoDB async through Motor, and preserves pure-python Ogg splitting for WhatsApp voice/audio files.
 
-### D. Trend Agent - Custom Topic Research Prompt
-* **Location:** `agents/trend.py`
-```text
-You are a dedicated Research and Fact Verification Agent.
-Research the following user topic: '{topic}'.
-Filter information relevant to the location: '{location}' and department: '{department}'.
-Active Reference Timestamp: {timestamp_str}.
-Execute Google Searches to verify the facts, dates, legal status, and entity names associated with this topic.
-Summarize the findings in a structured, fact-checked report in {language}.
-Do not include rumors, unverified claims, or hallucinations.
-```
+## Prompt/Gem Locations
 
-### E. Final Editorial Agent Prompt (System Instruction)
-* **Location:** `agents/editor.py`
-```text
-You are a professional Hindi news editor.
-Below is the consolidated factual information compiled by our multi-agent system.
-Your task is to synthesize this data into a single, cohesive, professional Hindi news report.
-Strictly follow these guidelines:
-1. Adhere ONLY to the provided facts. DO NOT introduce or hallucinate names, locations, numbers, dates, or legal allegations.
-2. Adapt the report for the location: '{location}' and domain focus: '{department}'.
-3. Formatting Rules (CRITICAL for Telegram compatibility):
-   - Use clean markdown headings (e.g., #, ##, ###) for structure.
-   - Use simple bold formatting (**word**) for key metrics or names.
-   - Use standard bullet points (-) for listing details.
-   - Strictly avoid using underscores (_) or standalone/unmatched asterisks (*) anywhere in the text.
-   - Do not nest formatting styles (e.g., do not place bold text inside italicized blocks).
-   - Do not add any emojis.
-   - Do not add conversational intro/outro text. Output only the finished news report.
-```
+- `prompts.py::AUDIO_ANALYSIS_PROMPT`
+- `prompts.py::OCR_ANALYSIS_PROMPT`
+- `prompts.py::SOCIAL_LINK_RESEARCH_PROMPT`
+- `prompts.py::TEXT_RESEARCH_PROMPT`
+- `prompts.py::EDITOR_SYSTEM_PROMPT`
+
+## User Interaction Text Locations
+
+- `user_interactions.py::WELCOME_TEXT`
+- `user_interactions.py::DASHBOARD_BODY`
+- `user_interactions.py::AUDIO_RECEIVED`
+- `user_interactions.py::IMAGE_RECEIVED`
+- `user_interactions.py::SOCIAL_LINK_RECEIVED`
+- `user_interactions.py::TEXT_RECEIVED`
+- `user_interactions.py::SETTINGS_HELP`
+- `user_interactions.py::ERROR_*`
+
+## Runtime Flow
+
+1. Meta calls `GET /api/webhook` with `hub.challenge`; the app validates `WHATSAPP_VERIFY_TOKEN`.
+2. Meta posts WhatsApp messages to `POST /api/webhook`; Telegram posts updates to `POST /api/telegram-webhook`.
+3. `main.py` routes channel messages by type:
+   - `audio` -> audio-to-news background task.
+   - `image` or image document -> OCR-to-news background task.
+   - public URL text -> social-link-to-news background task.
+   - any other text -> text-to-news background task.
+4. `SupervisorAgent` calls the specific extraction/research agent and then `EditorAgent`.
+5. The article is saved to MongoDB and sent back through the originating channel.
+
+## Operational Notes
+
+- The WhatsApp Cloud API requires a Meta app, configured phone number, permanent or system-user access token, webhook callback URL, and matching verify token.
+- Telegram requires `TELEGRAM_BOT_TOKEN` and a webhook pointing to `/api/telegram-webhook`.
+- `yt-dlp` can fail when a platform blocks unauthenticated downloads, private links, age gates, or region-restricted media. In that case the user should send the audio directly to WhatsApp.
+- For Meta WhatsApp Flows, publish a Flow with one intake screen named `NEWS_INTAKE` or update `utils/whatsapp.py` to match the published screen name.

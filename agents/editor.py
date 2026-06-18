@@ -2,6 +2,7 @@ import logging
 from google import genai
 from google.genai import types
 from config import Config
+from prompts import EDITOR_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -17,22 +18,7 @@ class EditorAgent:
         location = settings.get("location", "Delhi")
         department = settings.get("department", "General")
         
-        system_prompt = (
-            "You are a professional Hindi news editor.\n"
-            "Below is the consolidated factual information compiled by our multi-agent system.\n"
-            "Your task is to synthesize this data into a single, cohesive, professional Hindi news report.\n"
-            "Strictly follow these guidelines:\n"
-            "1. Adhere ONLY to the provided facts. DO NOT introduce or hallucinate names, locations, numbers, dates, or legal allegations.\n"
-            "2. Adapt the report for the location: '" + location + "' and domain focus: '" + department + "'.\n"
-            "3. Formatting Rules (CRITICAL for Telegram compatibility):\n"
-            "   - Use clean markdown headings (e.g., #, ##, ###) for structure.\n"
-            "   - Use simple bold formatting (**word**) for key metrics or names.\n"
-            "   - Use standard bullet points (-) for listing details.\n"
-            "   - Strictly avoid using underscores (_) or standalone/unmatched asterisks (*) anywhere in the text.\n"
-            "   - Do not nest formatting styles (e.g., do not place bold text inside italicized blocks).\n"
-            "   - Do not add any emojis.\n"
-            "   - Do not add conversational intro/outro text. Output only the finished news report."
-        )
+        system_prompt = EDITOR_SYSTEM_PROMPT.substitute(location=location, department=department)
 
         user_content = (
             f"Source Pipeline: {source_type}\n"
