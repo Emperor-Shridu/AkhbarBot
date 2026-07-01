@@ -293,13 +293,7 @@ async def task_compile_telegram_video(chat_id: int, file_id: str, mime_type: str
                 {"channel": "telegram", "chat_id": chat_id, "sender": sender},
             )
         else:
-            article = await news_service.from_audio(
-                video_bytes,
-                mime_type or "video/mp4",
-                _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
-                file_id,
-                {"channel": "telegram", "chat_id": chat_id, "sender": sender},
-            )
+            raise ValueError("Could not extract audio from this video. Send text or an audio-only file instead.")
         await tg_send_message(chat_id, article)
     except Exception as exc:
         logger.exception("Telegram video compilation failed")
