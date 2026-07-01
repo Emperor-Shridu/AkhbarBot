@@ -137,6 +137,18 @@ async def set_chat_mode(chat_id: int, mode: str | None) -> None:
     """Sets the Telegram input mode for a chat. Pass None to clear."""
     await update_chat_settings(chat_id, {"mode": mode})
 
+async def get_pending_stories(chat_id: int) -> list[dict] | None:
+    """Returns pending stories awaiting selection, or None."""
+    settings = await get_chat_settings(chat_id)
+    stories = settings.get("pending_stories")
+    if isinstance(stories, list):
+        return stories
+    return None
+
+async def set_pending_stories(chat_id: int, stories: list[dict] | None) -> None:
+    """Stores pending stories awaiting selection."""
+    await update_chat_settings(chat_id, {"pending_stories": stories})
+
 async def update_chat_settings(chat_id: int, updates: dict):
     """Updates settings for a specific chat ID."""
     database = get_db()

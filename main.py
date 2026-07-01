@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config import Config
-from database import get_chat_settings, get_chat_mode, get_recent_articles, init_indexes, set_chat_mode, update_chat_settings
+from database import get_chat_settings, get_chat_mode, get_pending_stories, get_recent_articles, init_indexes, set_chat_mode, set_pending_stories, update_chat_settings
 from services.news_service import NewsService, NewsSettings
 from user_interactions import (
     AUDIO_RECEIVED,
@@ -27,6 +27,7 @@ from user_interactions import (
     MODE_PROMPT_PROFESSIONALIZE,
     MODE_PROMPT_TEXT,
     MODE_PROMPT_TOPIC,
+    MODE_PROMPT_TOPIC_SELECTION,
     SETTINGS_HELP,
     SOCIAL_LINK_RECEIVED,
     TEXT_RECEIVED,
@@ -292,16 +293,54 @@ async def task_compile_telegram_text(chat_id: int, text: str, settings: dict, se
 
 
 async def task_compile_telegram_latest_topic(chat_id: int, topic: str, settings: dict, sender: dict):
-    """Generates an article from latest verified topic updates."""
+    """Generates multiple latest topic story options for selection."""
     try:
-        article = await news_service.from_latest_topic(
+        formatted_text, story_list = await news_service.from_latest_topic(
             topic,
             _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
             {"channel": "telegram", "chat_id": chat_id, "sender": sender},
         )
-        await tg_send_message(chat_id, article)
+        
+        if not story_list:
+            # Fallback: no stories found, return formatted text as-is
+            await tg_send_message(chat_id, formatted_text)
+            return
+        
+        await set_pending_stories(chat_id, story_list)
+        
+        lines = [f"Topic: {topic}", "Choose a story by replying with its number:"]
+        for idx, story in enumerate(story_list[:5], 1):
+            lines.append(f"\n{idx}. {story.get('title', 'Untitled')}")
+            lines.append(f"   {story.get('summary', '')[:200]}...")
+        
+        await tg_send_message(chat_id, "\n".join(lines))
+        await set_chat_mode(chat_id, "latest_topic_selection")
+        await tg_send_message(chat_id, MODE_PROMPT_TOPIC_SELECTION)
     except Exception as exc:
         logger.exception("Telegram latest topic compilation failed")
+        await tg_send_message(chat_id, ERROR_TEXT.format(error=str(exc)))
+
+
+async def task_expand_telegram_story(chat_id: int, story_index: int, settings: dict, sender: dict):
+    """Expands a user-selected story into a full article."""
+    try:
+        stories = await get_pending_stories(chat_id)
+        if not stories or story_index < 0 or story_index >= len(stories):
+            await tg_send_message(chat_id, "Invalid selection. Please try again.")
+            return
+        
+        story = stories[story_index]
+        await tg_send_message(chat_id, f"Expanding: {story.get('title', 'Story')}...")
+        
+        article = await news_service.expand_story(
+            story,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
+        await set_pending_stories(chat_id, None)
+    except Exception as exc:
+        logger.exception("Telegram story expansion failed")
         await tg_send_message(chat_id, ERROR_TEXT.format(error=str(exc)))
 
 
@@ -427,7 +466,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         elif mode == "latest_topic":
             await tg_send_message(chat_id, TEXT_RECEIVED)
             background_tasks.add_task(task_compile_telegram_latest_topic, chat_id, text, settings, sender)
-            await set_chat_mode(chat_id, None)
+        elif mode == "latest_topic_selection":
+            if text.isdigit():
+                idx = int(text) - 1
+                background_tasks.add_task(task_expand_telegram_story, chat_id, idx, settings, sender)
+                await set_chat_mode(chat_id, None)
+            else:
+                await tg_send_message(chat_id, "Please send a number to select a story (e.g., send '1', '2', etc.).")
         elif mode == "professionalize":
             await tg_send_message(chat_id, TEXT_RECEIVED)
             background_tasks.add_task(task_compile_telegram_professionalize, chat_id, text, settings, sender)

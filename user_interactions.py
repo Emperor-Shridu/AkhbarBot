@@ -26,6 +26,9 @@ MODE_PROMPT_TOPIC = (
     "Latest topic mode active.\n"
     "Send the topic you want the latest verified updates for."
 )
+MODE_PROMPT_TOPIC_SELECTION = (
+    "Select a story by replying with its number (e.g., send '1', '2', etc.)."
+)
 
 MODE_PROMPT_LINK = (
     "Social link mode active.\n"

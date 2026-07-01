@@ -90,10 +90,22 @@ class NewsService:
         topic: str,
         settings: NewsSettings,
         actor: dict[str, Any],
+    ) -> tuple[str, list[dict]]:
+        """Generates multiple short listed story options for a topic, returns (formatted_options_text, stories_list)."""
+        stories = await self.supervisor.compile_latest_topic(topic, settings.as_dict())
+        formatted = self.supervisor._format_stories_for_selection(stories)
+        await self._save("latest_topic_to_news", formatted, actor)
+        return formatted, stories
+
+    async def expand_story(
+        self,
+        story: dict[str, Any],
+        settings: NewsSettings,
+        actor: dict[str, Any],
     ) -> str:
-        """Generates and stores a fresh article from recent verified topic updates."""
-        article = await self.supervisor.compile_latest_topic(topic, settings.as_dict())
-        await self._save("latest_topic_to_news", article, actor)
+        """Expands a single selected story into a full Hindi news article."""
+        article = await self.supervisor.expand_story(story, settings.as_dict())
+        await self._save("expanded_story_to_news", article, actor)
         return article
 
     async def professionalize(

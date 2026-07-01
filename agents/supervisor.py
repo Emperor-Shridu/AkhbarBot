@@ -111,7 +111,8 @@ class SupervisorAgent:
         """
         Coordinates the Topic-to-News pipeline:
         1. Invokes TrendAgent to run fact verification searches for the topic.
-        2. Invokes EditorAgent to synthesize the Hindi news report.
+        2. Formats multiple story options for user selection.
+        3. Invokes EditorAgent to synthesize the chosen Hindi news report.
         """
         logger.info(f"Supervisor: Initiating topic research compilation for: {topic}...")
         
@@ -121,7 +122,7 @@ class SupervisorAgent:
         now = datetime.now()
         
         # Step 1: Fact Verification & Search Grounding
-        research_result = await self.trend_agent.search_topic(
+        stories = await self.trend_agent.search_topic(
             topic=topic,
             location=location,
             department=department,
@@ -129,33 +130,56 @@ class SupervisorAgent:
             timestamp=now
         )
         
-        # Step 2: Editorial Synthesis
+        # Step 2: Format stories for selection
+        stories_context = self._format_stories_for_selection(stories)
+        
+        # Step 3: Editorial Synthesis - present options and let editor create final article
         article = await self.editor_agent.synthesize(
             source_type=f"Topic Research: {topic}",
-            consolidated_context=research_result,
+            consolidated_context=stories_context,
             settings=settings
         )
         return article
 
-    async def compile_latest_topic(self, topic: str, settings: dict) -> str:
+    def _format_stories_for_selection(self, stories: list[dict]) -> str:
+        """Formats multiple story options for user selection."""
+        if not stories:
+            return "No story options found."
+        
+        formatted = []
+        for idx, story in enumerate(stories, 1):
+            formatted.append(f"Option {idx}: {story.get('title', 'Untitled')}")
+            formatted.append(f"  {story.get('summary', '')}")
+            if story.get('why_it_matters'):
+                formatted.append(f"  Why it matters: {story['why_it_matters']}")
+            formatted.append("")
+        return "\n".join(formatted)
+
+    async def compile_latest_topic(self, topic: str, settings: dict) -> list[dict]:
         """Builds a Hindi news article from the latest verified updates for a topic."""
         logger.info("Supervisor: Initiating latest topic compilation for: %s", topic)
         location = settings.get("location", "Delhi")
         department = settings.get("department", "General")
         language = settings.get("language", "Hindi")
-        research_result = await self.trend_agent.search_latest_topic(
+        stories = await self.trend_agent.search_latest_topic(
             topic=topic,
             location=location,
             department=department,
             language=language,
             timestamp=datetime.now(),
         )
+        return stories
+
+    async def expand_story(self, story: dict, settings: dict) -> str:
+        """Expands a single selected story into a full Hindi news article."""
+        title = story.get("title", "")
+        summary = story.get("summary", "")
+        why = story.get("why_it_matters", "")
+        
+        context = f"Selected Story:\nTitle: {title}\n\nSummary:\n{summary}\n\nNews Value:\n{why}\n\nExpand this into a full publish-ready Hindi news article following the editorial guidelines."
+        
         return await self.editor_agent.synthesize(
-            source_type=f"Latest Topic Research: {topic}",
-            consolidated_context=research_result,
+            source_type="Selected Story Expansion",
+            consolidated_context=context,
             settings=settings,
         )
-
-    async def professionalize_article(self, article: str, settings: dict) -> str:
-        """Rewrites a submitted draft into professional Hindi newsroom copy."""
-        return await self.editor_agent.professionalize(article, settings)

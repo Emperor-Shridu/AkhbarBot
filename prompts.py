@@ -41,9 +41,13 @@ TEXT_RESEARCH_PROMPT = Template(
 Research the following user-submitted news text/topic: $topic
 Filter information relevant to the location: $location and department/domain: $department.
 Active reference timestamp: $timestamp
-Execute Google Searches to verify facts, dates, legal status, and entity names.
-Summarize the findings in a structured, fact-checked report in $language.
-Do not include rumors, unverified claims, or hallucinations."""
+
+Return 3 to 5 distinct, publishable Hindi news story summaries derived from the research.
+Format each story with exactly these fields:
+- title: concise headline in Hindi
+- summary: 3 to 5 sentence factual blurb in Hindi
+- why_it_matters: one sentence on news value
+Do not include unverified claims or rumors. Respond in JSON like {"stories":[{"title":"...","summary":"...","why_it_matters":"..."}]}."""
 )
 
 LATEST_TOPIC_RESEARCH_PROMPT = Template(
@@ -51,9 +55,14 @@ LATEST_TOPIC_RESEARCH_PROMPT = Template(
 Find the most recent, credible, publishable developments about this topic: $topic
 Filter information relevant to the location: $location and department/domain: $department.
 Active reference timestamp: $timestamp
-Use search grounding to identify newly worded angles, fresh updates, current dates, and verified public facts.
-Avoid stale background unless it is essential for context.
-Summarize only verified findings in $language."""
+
+Return 3 to 5 distinct, publishable Hindi news story summaries about this topic.
+Format each story with exactly these fields:
+- title: concise headline in Hindi
+- summary: 3 to 5 sentence factual blurb in Hindi
+- why_it_matters: one sentence on news value
+Avoid stale background unless it is essential for context. Do not include rumors, unverified claims, or hallucinations.
+Respond in JSON like {"stories":[{"title":"...","summary":"...","why_it_matters":"..."}]}."""
 )
 
 EDITOR_SYSTEM_PROMPT = Template(
