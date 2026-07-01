@@ -103,6 +103,18 @@ async def save_article(article_doc: dict):
     result = await database.articles.insert_one(article_doc)
     return result.inserted_id
 
+async def get_recent_articles(limit: int = 20) -> list[dict]:
+    """Fetches recently generated articles for Streamlit history views."""
+    database = get_db()
+    safe_limit = max(1, min(limit, 50))
+    cursor = database.articles.find({}).sort("created_at", -1).limit(safe_limit)
+    articles = await cursor.to_list(length=safe_limit)
+    for article in articles:
+        article["_id"] = str(article["_id"])
+        if article.get("created_at"):
+            article["created_at"] = article["created_at"].isoformat()
+    return articles
+
 async def get_chat_settings(chat_id: int) -> dict:
     """Fetches chat configurations/preferences (e.g. location, department). Defaults if none exist."""
     database = get_db()
@@ -110,11 +122,32 @@ async def get_chat_settings(chat_id: int) -> dict:
     if not settings:
         settings = {
             "chat_id": chat_id,
-            "location": "Delhi",
+            "location": "Prayagraj, India",
             "department": "General",
             "language": "Hindi"
         }
     return settings
+
+async def get_chat_mode(chat_id: int) -> str | None:
+    """Returns the current Telegram input mode for a chat, or None."""
+    settings = await get_chat_settings(chat_id)
+    return settings.get("mode")
+
+async def set_chat_mode(chat_id: int, mode: str | None) -> None:
+    """Sets the Telegram input mode for a chat. Pass None to clear."""
+    await update_chat_settings(chat_id, {"mode": mode})
+
+async def get_pending_stories(chat_id: int) -> list[dict] | None:
+    """Returns pending stories awaiting selection, or None."""
+    settings = await get_chat_settings(chat_id)
+    stories = settings.get("pending_stories")
+    if isinstance(stories, list):
+        return stories
+    return None
+
+async def set_pending_stories(chat_id: int, stories: list[dict] | None) -> None:
+    """Stores pending stories awaiting selection."""
+    await update_chat_settings(chat_id, {"pending_stories": stories})
 
 async def update_chat_settings(chat_id: int, updates: dict):
     """Updates settings for a specific chat ID."""

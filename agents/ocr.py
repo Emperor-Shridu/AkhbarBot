@@ -2,6 +2,7 @@ import logging
 from google import genai
 from google.genai import types
 from config import Config
+from prompts import OCR_ANALYSIS_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +32,7 @@ class OCRAgent:
                 mime_type=mime_type
             )
             
-            prompt = (
-                "You are an expert Document OCR and entity extraction agent.\n"
-                "Analyze the uploaded document image.\n"
-                "Your tasks are:\n"
-                "1. Perform OCR and extract all readable text. Maintain original layout or flow where possible.\n"
-                "2. Extract key entities: Person names, organizations, departments, locations, dates/times, and numbers.\n"
-                "3. Draft a clean, structured factual summary in Hindi outlining the core matter of the document.\n"
-                "Do not hallucinate or add any details not explicitly visible in the document."
-            )
+            prompt = OCR_ANALYSIS_PROMPT
             
             logger.info("Sending image to Gemini for OCR and entity extraction...")
             response = await self.client.aio.models.generate_content(
@@ -55,3 +48,13 @@ class OCRAgent:
         except Exception as e:
             logger.error(f"OCR Agent failed: {e}")
             return f"[OCR Ingestion Error: {str(e)}]"
+
+    async def extract_text_from_bytes(self, image_bytes: bytes, mime_type: str) -> str:
+        part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+        response = await self.client.aio.models.generate_content(
+            model=Config.GEMINI_MODEL,
+            contents=[part, OCR_ANALYSIS_PROMPT],
+        )
+        if not response.text:
+            raise ValueError("Gemini returned an empty response for OCR")
+        return response.text

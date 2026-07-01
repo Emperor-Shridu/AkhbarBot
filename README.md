@@ -1,65 +1,99 @@
-# AkhbarBot v2 (Python Multi-Agent Edition)
+# AkhbarBot
 
-An asynchronous, serverless-optimized Telegram bot that compiles multi-modal inputs (voice notes, images/documents, topics, trends) into professional Hindi news reports.
+AkhbarBot is a Hindi news article generator with a Telegram bot backend and a Streamlit web frontend. The old WhatsApp Business API layer has been removed. Telegram and Streamlit now share one modular article-generation service, so every input path produces the same publish-ready newsroom output.
 
----
+## News Creation Paths
 
-## 🚀 Key Features
+1. Audio upload or Telegram voice/audio to news.
+2. Image or scanned document OCR to news.
+3. Public social media URL to news through `yt-dlp` audio extraction plus search-grounded verification.
+4. Text, topic, or pasted facts to news.
+5. Latest topic research to a newly worded article.
+6. Professional rewrite of an existing article draft.
 
-*   **Custom Async Engine:** Fast, lightweight multi-agent coordination using `asyncio` and the native `google-genai` SDK.
-*   **Parallelized Audio Chunking:** Pure-python Ogg page segmenter that splits long audios into 60s segments to run transcriptions in parallel.
-*   **Search Grounding:** Ingests live Google search results using Gemini's native Search Grounding tool for topic verification and local trends lookup.
-*   **Dynamic Telegram UI:** Control center dashboard using Inline Keyboard buttons with real-time pending counts.
-*   **State Locking & Deduplication:** Compound unique constraints and atomic transitions prevent race conditions and duplicate executions.
+All final output is Hindi only and formatted as a publish-ready article with a headline and body. The editor prompt explicitly avoids mentioning the source format, recording, OCR, bot, or internal workflow.
 
----
+## Recommended Free Deployment
 
-## 📁 Project Structure
+Use two free-friendly surfaces:
+
+- **Render Free Web Service** for FastAPI and the Telegram webhook.
+- **Streamlit Community Cloud** for the website frontend.
+
+This split is intentional. Telegram needs a public webhook URL, while Streamlit needs its own interactive app server. Render web services expose one public HTTP port, and free services spin down after idle time. Keeping Streamlit on Streamlit Cloud avoids fighting that port model and leaves the Render service focused on backend work.
+
+## Project Structure
 
 ```text
-e:/autoPapaPython/
-├── agents/
-│   ├── __init__.py
-│   ├── audio.py        # Audio Chunk Agent (Map-Reduce transcription)
-│   ├── ocr.py          # OCR Agent (Vision context extraction)
-│   ├── trend.py        # Trend Agent (Search Grounding factual checks)
-│   ├── editor.py       # Final Editorial Agent (Hindi news synthesis)
-│   └── supervisor.py   # Supervisor orchestrator
-├── utils/
-│   ├── __init__.py
-│   ├── ogg_splitter.py # Pure-python binary Ogg page segmenter
-│   └── telegram.py     # Telegram HTTP Client wrappers
-├── config.py           # Configuration parsing & validation
-├── database.py         # Motor connection pooling and index setup
-├── main.py             # FastAPI entrypoint and webhook routes
-├── requirements.txt    # Project dependencies
-├── IMPLEMENTATION.md   # System design and AI prompts reference
-├── VERSIONS.md         # Interview QA sheet and challenges log
-└── README.md           # Project documentation
+E:/autoPapaPython/
+|-- agents/
+|   |-- audio.py
+|   |-- ocr.py
+|   |-- trend.py
+|   |-- editor.py
+|   `-- supervisor.py
+|-- services/
+|   `-- news_service.py      # Shared article service for Telegram and Streamlit
+|-- utils/
+|   |-- social_audio.py
+|   |-- ogg_splitter.py
+|   `-- telegram.py
+|-- docs/
+|   |-- DEPLOYMENT.md
+|   `-- interview_portfolio_log.md
+|-- main.py                  # FastAPI backend and Telegram webhook
+|-- streamlit_app.py          # Streamlit frontend
+|-- prompts.py
+|-- user_interactions.py
+|-- config.py
+|-- database.py
+|-- render.yaml
+|-- .env.example
+`-- requirements.txt
 ```
 
----
+## Environment
 
-## 🛠️ Setup & Local Execution
+Create `.env` locally from `.env.example`:
 
-### 1. Install Dependencies
+```env
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash-lite
+MONGO_URI=your_mongodb_uri
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+ALLOWED_CHAT_ID=optional_comma_separated_telegram_chat_ids
+STREAMLIT_USER_IDS=demo,father
+API_SHARED_SECRET=choose_a_long_random_secret
+BACKEND_BASE_URL=http://localhost:8000
+```
+
+`demo` is included for interview showcase access. Replace or supplement it with your father's user id for real use.
+
+## Run Locally
+
+Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
-Create a `.env` file in the root directory:
-```env
-TELEGRAM_BOT_TOKEN=your_bot_token
-MONGO_URI=your_mongodb_atlas_uri
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
-ALLOWED_CHAT_ID=your_chat_id
-```
+Start the backend:
 
-### 3. Run FastAPI Application
 ```bash
 python -m uvicorn main:app --reload
 ```
 
-The application runs on `http://127.0.0.1:8000`. You can configure a webhook URL via Telegram pointing to `/api/webhook`.
+Start the website:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Register Telegram webhook after the Render backend is live:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<your-render-service>.onrender.com/api/telegram-webhook"
+```
+
+The Streamlit app includes a WhatsApp share button. It opens a prefilled WhatsApp message so the final article can be sent to the office group from the user's device.
+

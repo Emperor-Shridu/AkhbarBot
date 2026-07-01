@@ -1,77 +1,126 @@
+import json
 import logging
 from datetime import datetime
+from googlesearch import search as google_search
 from google import genai
 from google.genai import types
 from config import Config
+from prompts import LATEST_TOPIC_RESEARCH_PROMPT, TEXT_RESEARCH_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+def _web_search_context(query: str, max_results: int = 5) -> str:
+    """Fetches top Google search results and returns title+URL snippets."""
+    try:
+        results = list(google_search(query, max_results=max_results, advanced=True))
+        if not results:
+            return ""
+        lines = ["--- Google Search Results ---"]
+        for r in results:
+            lines.append(f"Title: {r.title}\nURL: {r.url}\nSnippet: {r.description}")
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.warning("Web search failed: %s", exc)
+        return ""
+
 
 class TrendAgent:
     def __init__(self):
         self.client = genai.Client(api_key=Config.GEMINI_API_KEY)
-        # Configure search grounding tool
-        self.search_tool_config = types.GenerateContentConfig(
-            tools=[{"google_search": {}}]
-        )
 
-    async def fetch_local_trends(self, location: str, department: str, language: str, timestamp: datetime) -> str:
+    async def search_topic(self, topic: str, location: str, department: str, language: str, timestamp: datetime) -> list[dict]:
         """
-        Fetches the top 5 local trends using Gemini's native Google Search Grounding.
-        Injects location preferences, active timestamp, and department filters.
+        Returns multiple parsed story options from web search + Gemini.
         """
         timestamp_str = timestamp.isoformat()
-        prompt = (
-            f"You are a professional local news investigator.\n"
-            f"Using Google Search, fetch the top 5 current, active local news trends/events for the location: '{location}'.\n"
-            f"Focus on the department/domain: '{department}'.\n"
-            f"Active Timestamp: {timestamp_str}.\n"
-            f"Output a fact-verified summary of exactly 5 distinct news entries. For each entry, specify the key event, names, dates, and verified facts.\n"
-            f"Provide the response in {language}."
+        web_context = ""
+        try:
+            web_context = _web_search_context(f"{topic} {location} {department}", max_results=6)
+        except Exception:
+            pass
+
+        base_prompt = TEXT_RESEARCH_PROMPT.substitute(
+            topic=topic,
+            location=location,
+            department=department,
+            language=language,
+            timestamp=timestamp_str,
+        )
+        prompt = base_prompt
+        if web_context:
+            prompt = f"{web_context}\n\nAbove are recent web search results for reference.\n\n{prompt}"
+
+        logger.info(f"TrendAgent: Researching topic '{topic}' in {location}...")
+        response = await self.client.aio.models.generate_content(
+            model=Config.GEMINI_MODEL,
+            contents=prompt,
         )
 
-        logger.info(f"TrendAgent: Fetching top trends for {location} ({department}) using Search Grounding...")
-        try:
-            response = await self.client.aio.models.generate_content(
-                model=Config.GEMINI_MODEL,
-                contents=prompt,
-                config=self.search_tool_config
-            )
-            
-            if not response.text:
-                raise ValueError("Empty response from Gemini Search Grounding")
-            
-            return response.text
-        except Exception as e:
-            logger.error(f"TrendAgent failed to fetch trends: {e}")
-            return f"[Trend Ingestion Error: {str(e)}]"
+        text = (response.text or "").strip()
+        if not text:
+            raise ValueError("Empty response from Gemini")
 
-    async def search_topic(self, topic: str, location: str, department: str, language: str, timestamp: datetime) -> str:
-        """
-        Performs deep research on a specific user-submitted topic, applying search grounding and filters.
-        """
-        timestamp_str = timestamp.isoformat()
-        prompt = (
-            f"You are a dedicated Research and Fact Verification Agent.\n"
-            f"Research the following user topic: '{topic}'.\n"
-            f"Filter information relevant to the location: '{location}' and department: '{department}'.\n"
-            f"Active Reference Timestamp: {timestamp_str}.\n"
-            f"Execute Google Searches to verify the facts, dates, legal status, and entity names associated with this topic.\n"
-            f"Summarize the findings in a structured, fact-checked report in {language}.\n"
-            f"Do not include rumors, unverified claims, or hallucinations."
+        try:
+            data = json.loads(text)
+            stories = data.get("stories", [])
+            if not isinstance(stories, list):
+                raise ValueError("Malformed stories payload")
+            return stories[:5]
+        except Exception as exc:
+            logger.warning("Failed to parse stories JSON: %s | payload: %s", exc, text[:500])
+            return [{"title": text[:120], "summary": text, "why_it_matters": topic}]
+
+    async def search_latest_topic(self, topic: str, location: str, department: str, language: str, timestamp: datetime) -> list[dict]:
+        """Returns multiple parsed story options from web search + Gemini."""
+        web_context = ""
+        try:
+            web_context = _web_search_context(f"{topic} latest news {location} {department}", max_results=6)
+        except Exception:
+            pass
+
+        prompt = LATEST_TOPIC_RESEARCH_PROMPT.substitute(
+            topic=topic,
+            location=location,
+            department=department,
+            language=language,
+            timestamp=timestamp.isoformat(),
+        )
+        if web_context:
+            prompt = f"{web_context}\n\nAbove are recent web search results for reference.\n\n{prompt}"
+
+        logger.info("TrendAgent: Researching latest developments for '%s'...", topic)
+        response = await self.client.aio.models.generate_content(
+            model=Config.GEMINI_MODEL,
+            contents=prompt,
         )
 
-        logger.info(f"TrendAgent: Researching topic '{topic}' in {location} using Search Grounding...")
+        text = (response.text or "").strip()
+        if not text:
+            raise ValueError("Empty response from Gemini")
+
         try:
-            response = await self.client.aio.models.generate_content(
-                model=Config.GEMINI_MODEL,
-                contents=prompt,
-                config=self.search_tool_config
-            )
-            
-            if not response.text:
-                raise ValueError("Empty response from Gemini Search Grounding")
-                
-            return response.text
-        except Exception as e:
-            logger.error(f"TrendAgent failed to research topic: {e}")
-            return f"[Topic Research Error: {str(e)}]"
+            data = json.loads(text)
+            stories = data.get("stories", [])
+            if not isinstance(stories, list):
+                raise ValueError("Malformed stories payload")
+            return stories[:5]
+        except Exception as exc:
+            logger.warning("Failed to parse stories JSON: %s | payload: %s", exc, text[:500])
+            return [{"title": text[:120], "summary": text, "why_it_matters": topic}]
+
+
+def _web_search_context(query: str, max_results: int = 5) -> str:
+    """Fetches top Google search results and returns title+URL snippets."""
+    try:
+        results = list(google_search(query, max_results=max_results, advanced=True))
+        if not results:
+            return ""
+        lines = ["--- Google Search Results ---"]
+        for r in results:
+            lines.append(f"Title: {r.title}\nURL: {r.url}\nSnippet: {r.description}")
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.warning("Web search failed: %s", exc)
+        return ""
+

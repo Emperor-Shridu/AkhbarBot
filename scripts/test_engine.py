@@ -9,7 +9,7 @@ async def test_components():
     print("1. Testing configuration validation...")
     try:
         from config import Config
-        print(f"   Config loaded. Bot Token: {Config.TELEGRAM_BOT_TOKEN[:10]}... Allowed Chat: {Config.ALLOWED_CHAT_ID}")
+        print(f"   Config loaded. Model configured: {Config.GEMINI_MODEL}")
     except Exception as e:
         print(f"   [ERROR] Config loading failed: {e}")
         return False

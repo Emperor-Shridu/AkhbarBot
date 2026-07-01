@@ -4,6 +4,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 from config import Config
+from prompts import AUDIO_ANALYSIS_PROMPT
 from utils.ogg_splitter import split_ogg
 
 logger = logging.getLogger(__name__)
@@ -12,7 +13,7 @@ class AudioChunkAgent:
     def __init__(self):
         # Initialize Google GenAI client
         self.client = genai.Client(api_key=Config.GEMINI_API_KEY)
-        self.semaphore = asyncio.Semaphore(5) # Concurrency guardrail
+        self.semaphore = asyncio.Semaphore(4) # Concurrency guardrail
 
     async def _process_chunk(self, chunk_bytes: bytes, mime_type: str, chunk_index: int, note_id: str, timestamp: datetime) -> str:
         """Processes a single audio chunk in parallel with Gemini."""
@@ -25,14 +26,9 @@ class AudioChunkAgent:
                 mime_type=mime_type
             )
             
-            prompt = (
-                f"You are an expert audio transcription and factual analysis agent.\n"
-                f"Analyze this audio clip (Segment #{chunk_index}, recorded at: {timestamp.isoformat()}).\n"
-                f"Your tasks are:\n"
-                f"1. Transcribe the audio clearly and accurately in Hindi.\n"
-                f"2. Extract all key facts, including entity names (people, organizations), locations, dates/times, and core events mentioned.\n"
-                f"3. Highlight any legal allegations, quotes, or numbers.\n"
-                f"Strictly adhere ONLY to the facts present in the audio. Do not summarize outside this audio fragment."
+            prompt = AUDIO_ANALYSIS_PROMPT.substitute(
+                chunk_index=chunk_index,
+                timestamp=timestamp.isoformat(),
             )
             
             try:
@@ -102,3 +98,17 @@ class AudioChunkAgent:
         logger.info(f"Fanning out {len(all_chunks_tasks)} audio chunk Gemini requests...")
         results = await asyncio.gather(*all_chunks_tasks)
         return results
+
+    async def analyze_audio_bytes(self, audio_bytes: bytes, mime_type: str, timestamp: datetime, source_id: str) -> list:
+        chunks = split_ogg(audio_bytes) if mime_type in ("audio/ogg", "audio/opus") else [audio_bytes]
+        tasks = [
+            self._process_chunk(
+                chunk_bytes=chunk,
+                mime_type=mime_type,
+                chunk_index=index + 1,
+                note_id=source_id,
+                timestamp=timestamp,
+            )
+            for index, chunk in enumerate(chunks)
+        ]
+        return await asyncio.gather(*tasks)
