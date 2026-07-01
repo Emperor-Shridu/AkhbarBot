@@ -120,6 +120,10 @@ async def require_streamlit_user(
     return x_user_id
 
 
+@app.head("/health")
+async def health_head():
+    return {}
+
 @app.get("/health")
 async def health() -> dict[str, bool]:
     """Lightweight health check for Render and uptime checks."""
