@@ -12,7 +12,7 @@ class Config:
     ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID")
     STREAMLIT_USER_IDS = os.getenv("STREAMLIT_USER_IDS", "demo")
     API_SHARED_SECRET = os.getenv("API_SHARED_SECRET")
-    BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000")
+    BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "https://akhbar-bot.onrender.com")
 
     @classmethod
     def is_chat_allowed(cls, chat_id: int) -> bool:
