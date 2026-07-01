@@ -1,76 +1,79 @@
-# AkhbarBot v3: Dual-Channel Implementation Guide
+# AkhbarBot Implementation Notes
 
-## Core Methodology
+## Current Architecture
 
-The product is constrained to four user paths only:
+AkhbarBot now has three clear layers:
 
-1. Audio to news.
-2. Facebook/other social media video or audio link to news through `yt-dlp` audio extraction.
-3. Document/photo OCR to news article.
-4. Text to news article.
+1. **Channel adapters:** Telegram webhook in `main.py` and Streamlit frontend in `streamlit_app.py`.
+2. **Service layer:** `services/news_service.py` exposes the article-generation methods used by every channel.
+3. **Agent layer:** `agents/` performs audio analysis, OCR, search-grounded research, and final editorial synthesis.
 
-The old pending voice-note compile queue and top-local-trends mode are no longer part of the primary methodology. WhatsApp Business API and Telegram are both channel layers; WhatsApp Flow/list UI and Telegram inline buttons are intake helpers; Gemini agents remain the shared content intelligence layer.
+WhatsApp-specific endpoints, configuration, and helper utilities were removed. There is no `/api/webhook` Meta endpoint and no `WHATSAPP_*` environment requirement.
 
-## Architecture Decisions
+## Why FastAPI Backend Plus Streamlit Frontend
 
-### Same backend for WhatsApp and Telegram
+FastAPI remains the backend because Telegram needs a reliable webhook endpoint and upload APIs. Streamlit is best kept as a separate frontend because it provides the fastest usable web interface for your father and for interview demonstrations.
 
-WhatsApp support was added for the Indian deployment context because Telegram access can be banned or restricted, but the existing functional Telegram bot remains useful where available. The app exposes Meta webhook verification through `GET /api/webhook`, receives WhatsApp message events through `POST /api/webhook`, and receives Telegram updates through `POST /api/telegram-webhook`. Both channels route into the same `SupervisorAgent`.
+For free hosting, the recommended split is:
 
-### WhatsApp Flows and list fallback
+- Render Free Web Service: `main.py` with `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+- Streamlit Community Cloud: `streamlit_app.py`, configured with `BACKEND_BASE_URL`, `STREAMLIT_USER_IDS`, and `API_SHARED_SECRET`.
 
-`utils/whatsapp.py` sends a WhatsApp Flow when `WHATSAPP_FLOW_ID` is configured. If no Flow is configured, it sends a WhatsApp interactive list with the same four paths. This keeps local development and production setup practical while preserving the WhatsApp-native intake design.
+This avoids Vercel's serverless timeout pattern for long audio work. A 10-minute audio file can still be slow because Gemini processing and social extraction take time, but it is no longer bound to Vercel-style short serverless execution.
 
-### Telegram support without extra methodology
+## Article Modes
 
-Telegram support uses the same four paths as WhatsApp. Audio/photo/text/link messages are processed immediately; no separate pending queue or trends mode is reintroduced.
+### Audio to News
 
-### Prompt and text separation
+Telegram or Streamlit sends raw audio bytes. `NewsService.from_audio()` calls `SupervisorAgent.compile_audio_bytes()`, which chunks Ogg/Opus audio where possible, extracts facts through Gemini, and synthesizes a Hindi article.
 
-All LLM prompts/gems are centralized in `prompts.py`. All user-facing interaction text is centralized in `user_interactions.py`. This makes editorial tuning and WhatsApp copy changes possible without hunting through webhook logic.
+### Image/OCR to News
 
-### Social link extraction
+Uploaded image bytes go to `NewsService.from_image()`, then `OCRAgent`, then the editor. The final output avoids saying that the source was an image or scan.
 
-`utils/social_audio.py` uses `yt-dlp` to download the best available public audio for social-media URLs. The extracted audio is passed through the same audio factual extraction agent, then combined with search-grounded URL verification before final article writing.
+### Social Link to News
 
-### Serverless-friendly agent core
+`NewsService.from_social_link()` uses `yt-dlp` via `utils/social_audio.py` to extract public audio from supported URLs. `TrendAgent` performs search-grounded context verification before the editor writes the final article.
 
-The existing custom async engine remains. It avoids heavy orchestration frameworks, uses Gemini directly, keeps MongoDB async through Motor, and preserves pure-python Ogg splitting for WhatsApp voice/audio files.
+### Text to News
 
-## Prompt/Gem Locations
+`NewsService.from_text()` treats pasted facts or a topic brief as a fact-checking task. Search grounding verifies dates, names, entities, and claims before final writing.
+
+### Latest Topic
+
+`NewsService.from_latest_topic()` uses the new latest-topic prompt to find recent, credible developments about a topic and write a newly worded Hindi article.
+
+### Professionalize Article
+
+`NewsService.professionalize()` rewrites a submitted Hindi draft into polished newsroom copy without inventing facts.
+
+## API Endpoints
+
+- `GET /health`
+- `POST /api/telegram-webhook`
+- `POST /api/articles/text`
+- `POST /api/articles/latest-topic`
+- `POST /api/articles/professionalize`
+- `POST /api/articles/social-link`
+- `POST /api/articles/audio`
+- `POST /api/articles/image`
+- `GET /api/articles/history`
+
+All Streamlit article endpoints require `X-User-Id`. If `API_SHARED_SECRET` is set, they also require `X-Api-Secret`.
+
+## Prompt Locations
 
 - `prompts.py::AUDIO_ANALYSIS_PROMPT`
 - `prompts.py::OCR_ANALYSIS_PROMPT`
 - `prompts.py::SOCIAL_LINK_RESEARCH_PROMPT`
 - `prompts.py::TEXT_RESEARCH_PROMPT`
+- `prompts.py::LATEST_TOPIC_RESEARCH_PROMPT`
 - `prompts.py::EDITOR_SYSTEM_PROMPT`
+- `prompts.py::PROFESSIONALIZE_ARTICLE_PROMPT`
 
-## User Interaction Text Locations
+## Storage
 
-- `user_interactions.py::WELCOME_TEXT`
-- `user_interactions.py::DASHBOARD_BODY`
-- `user_interactions.py::AUDIO_RECEIVED`
-- `user_interactions.py::IMAGE_RECEIVED`
-- `user_interactions.py::SOCIAL_LINK_RECEIVED`
-- `user_interactions.py::TEXT_RECEIVED`
-- `user_interactions.py::SETTINGS_HELP`
-- `user_interactions.py::ERROR_*`
+MongoDB remains the persistent store. Generated articles are saved with `source_type`, `generated_article_hindi`, `created_at`, and actor metadata. Streamlit history reads from the same `articles` collection.
 
-## Runtime Flow
+On Render Free, local filesystem changes are ephemeral, so MongoDB Atlas or another external MongoDB service is preferred for history. Do not rely on local files for durable article history.
 
-1. Meta calls `GET /api/webhook` with `hub.challenge`; the app validates `WHATSAPP_VERIFY_TOKEN`.
-2. Meta posts WhatsApp messages to `POST /api/webhook`; Telegram posts updates to `POST /api/telegram-webhook`.
-3. `main.py` routes channel messages by type:
-   - `audio` -> audio-to-news background task.
-   - `image` or image document -> OCR-to-news background task.
-   - public URL text -> social-link-to-news background task.
-   - any other text -> text-to-news background task.
-4. `SupervisorAgent` calls the specific extraction/research agent and then `EditorAgent`.
-5. The article is saved to MongoDB and sent back through the originating channel.
-
-## Operational Notes
-
-- The WhatsApp Cloud API requires a Meta app, configured phone number, permanent or system-user access token, webhook callback URL, and matching verify token.
-- Telegram requires `TELEGRAM_BOT_TOKEN` and a webhook pointing to `/api/telegram-webhook`.
-- `yt-dlp` can fail when a platform blocks unauthenticated downloads, private links, age gates, or region-restricted media. In that case the user should send the audio directly to WhatsApp.
-- For Meta WhatsApp Flows, publish a Flow with one intake screen named `NEWS_INTAKE` or update `utils/whatsapp.py` to match the published screen name.

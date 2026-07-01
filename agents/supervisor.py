@@ -59,8 +59,9 @@ class SupervisorAgent:
         )
         return article
 
-    async def compile_audio_bytes(self, audio_bytes: bytes, mime_type: str, settings: dict, source_id: str = "whatsapp_audio") -> str:
-        logger.info("Supervisor: Initiating WhatsApp audio compilation...")
+    async def compile_audio_bytes(self, audio_bytes: bytes, mime_type: str, settings: dict, source_id: str = "audio") -> str:
+        """Builds a Hindi news article from raw audio bytes."""
+        logger.info("Supervisor: Initiating audio compilation...")
         chunk_summaries = await self.audio_agent.analyze_audio_bytes(
             audio_bytes=audio_bytes,
             mime_type=mime_type,
@@ -77,7 +78,8 @@ class SupervisorAgent:
         )
 
     async def compile_image_bytes(self, image_bytes: bytes, mime_type: str, settings: dict) -> str:
-        logger.info("Supervisor: Initiating WhatsApp OCR compilation...")
+        """Builds a Hindi news article from raw image/document bytes."""
+        logger.info("Supervisor: Initiating OCR compilation...")
         ocr_result = await self.ocr_agent.extract_text_from_bytes(image_bytes, mime_type)
         return await self.editor_agent.synthesize(
             source_type="Document or Photo OCR to News",
@@ -95,18 +97,7 @@ class SupervisorAgent:
             source_id=url,
         )
 
-        location = settings.get("location", "Delhi")
-        department = settings.get("department", "General")
-        language = settings.get("language", "Hindi")
-        link_research = await self.trend_agent.research_social_link(
-            url=url,
-            location=location,
-            department=department,
-            language=language,
-            timestamp=datetime.now(),
-        )
-
-        consolidated = f"--- Link Verification ---\n{link_research}\n"
+        consolidated = ""
         for idx, summary in enumerate(audio_summaries):
             consolidated += f"\n--- Extracted Audio Analysis #{idx + 1} ---\n{summary}\n"
 
@@ -145,3 +136,26 @@ class SupervisorAgent:
             settings=settings
         )
         return article
+
+    async def compile_latest_topic(self, topic: str, settings: dict) -> str:
+        """Builds a Hindi news article from the latest verified updates for a topic."""
+        logger.info("Supervisor: Initiating latest topic compilation for: %s", topic)
+        location = settings.get("location", "Delhi")
+        department = settings.get("department", "General")
+        language = settings.get("language", "Hindi")
+        research_result = await self.trend_agent.search_latest_topic(
+            topic=topic,
+            location=location,
+            department=department,
+            language=language,
+            timestamp=datetime.now(),
+        )
+        return await self.editor_agent.synthesize(
+            source_type=f"Latest Topic Research: {topic}",
+            consolidated_context=research_result,
+            settings=settings,
+        )
+
+    async def professionalize_article(self, article: str, settings: dict) -> str:
+        """Rewrites a submitted draft into professional Hindi newsroom copy."""
+        return await self.editor_agent.professionalize(article, settings)

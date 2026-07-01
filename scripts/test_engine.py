@@ -9,8 +9,7 @@ async def test_components():
     print("1. Testing configuration validation...")
     try:
         from config import Config
-        channel = "WhatsApp" if Config.WHATSAPP_ACCESS_TOKEN else "Telegram"
-        print(f"   Config loaded. Active channel available: {channel}")
+        print(f"   Config loaded. Model configured: {Config.GEMINI_MODEL}")
     except Exception as e:
         print(f"   [ERROR] Config loading failed: {e}")
         return False
@@ -20,7 +19,6 @@ async def test_components():
         from database import get_db
         from utils.ogg_splitter import split_ogg
         from utils.telegram import send_message
-        from utils.whatsapp import send_text
         from agents.audio import AudioChunkAgent
         from agents.ocr import OCRAgent
         from agents.trend import TrendAgent

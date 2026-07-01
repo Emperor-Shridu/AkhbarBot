@@ -1,10 +1,12 @@
 WELCOME_TEXT = (
-    "AkhbarBot is ready on WhatsApp.\n\n"
-    "Choose one of four news creation paths:\n"
+    "AkhbarBot is ready.\n\n"
+    "Choose a news creation path:\n"
     "1. Audio to news\n"
     "2. Social video/audio link to news\n"
     "3. Document/photo OCR to news\n"
-    "4. Text to news article"
+    "4. Text to news article\n"
+    "5. Latest topic article\n"
+    "6. Professionalize an article"
 )
 
 DASHBOARD_BODY = (
@@ -13,6 +15,41 @@ DASHBOARD_BODY = (
     "Department: {department}\n"
     "Language: {language}\n\n"
     "Send audio, image/document, a social media URL, or text."
+)
+
+MODE_PROMPT_TEXT = (
+    "Text mode active.\n"
+    "Send any topic, brief, or pasted facts and I will prepare the news article."
+)
+
+MODE_PROMPT_TOPIC = (
+    "Latest topic mode active.\n"
+    "Send the topic you want the latest verified updates for."
+)
+
+MODE_PROMPT_LINK = (
+    "Social link mode active.\n"
+    "Send a public media URL (YouTube, Instagram, etc.) and I will prepare the news article."
+)
+
+MODE_PROMPT_IMAGE = (
+    "OCR mode active.\n"
+    "Send a photo or scanned document and I will extract the text and prepare the article."
+)
+
+MODE_PROMPT_AUDIO = (
+    "Audio mode active.\n"
+    "Send a voice message or audio file and I will prepare the news article."
+)
+
+MODE_PROMPT_PROFESSIONALIZE = (
+    "Professionalize mode active.\n"
+    "Paste a draft article and I will rewrite it into publish-ready Hindi newsroom copy."
+)
+
+MODE_CLEARED = (
+    "Mode cleared.\n"
+    "Send /start to see the menu again, or just send content and I will pick the right path."
 )
 
 AUDIO_RECEIVED = "Audio received. I am extracting facts and preparing the news article."

@@ -1,15 +1,17 @@
+"""FastAPI backend for Telegram webhooks and Streamlit article APIs."""
+
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-from agents.supervisor import SupervisorAgent
 from config import Config
-from database import get_chat_settings, init_indexes, save_article, update_chat_settings
+from database import get_chat_settings, get_chat_mode, get_recent_articles, init_indexes, set_chat_mode, update_chat_settings
+from services.news_service import NewsService, NewsSettings
 from user_interactions import (
     AUDIO_RECEIVED,
     DASHBOARD_BODY,
@@ -18,12 +20,19 @@ from user_interactions import (
     ERROR_SOCIAL,
     ERROR_TEXT,
     IMAGE_RECEIVED,
+    MODE_CLEARED,
+    MODE_PROMPT_AUDIO,
+    MODE_PROMPT_IMAGE,
+    MODE_PROMPT_LINK,
+    MODE_PROMPT_PROFESSIONALIZE,
+    MODE_PROMPT_TEXT,
+    MODE_PROMPT_TOPIC,
     SETTINGS_HELP,
     SOCIAL_LINK_RECEIVED,
     TEXT_RECEIVED,
     WELCOME_TEXT,
 )
-from utils.whatsapp import download_media, send_flow, send_text
+from utils.telegram import answer_callback_query as tg_answer_callback_query
 from utils.telegram import download_file as tg_download_file
 from utils.telegram import get_file as tg_get_file
 from utils.telegram import send_message as tg_send_message
@@ -34,31 +43,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-supervisor = SupervisorAgent()
 URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+Config.validate()
+news_service = NewsService()
+
+
+class ArticleRequest(BaseModel):
+    """Request body for text-based article generation paths."""
+
+    text: str = Field(..., min_length=1)
+    location: str = "Delhi"
+    department: str = "General"
+
+
+class SocialLinkRequest(BaseModel):
+    """Request body for public social media URL processing."""
+
+    url: str = Field(..., min_length=1)
+    location: str = "Delhi"
+    department: str = "General"
+
+
+class ArticleResponse(BaseModel):
+    """Response body returned by article-generation endpoints."""
+
+    article: str
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Initializes shared backend resources when the web service starts."""
     logger.info("Initializing database connections and indexes...")
     await init_indexes()
     yield
     logger.info("Shutting down application...")
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(title="AkhbarBot Telegram + Streamlit Backend", lifespan=lifespan)
 
 
-def _extract_messages(payload: dict) -> list[dict]:
-    messages = []
-    for entry in payload.get("entry", []):
-        for change in entry.get("changes", []):
-            value = change.get("value", {})
-            messages.extend(value.get("messages", []))
-    return messages
+def _settings(location: str = "Delhi", department: str = "General") -> NewsSettings:
+    """Builds normalized Hindi-only article settings."""
+    return NewsSettings(location=location, department=department, language="Hindi")
 
 
 def _is_public_url(text: str) -> bool:
+    """Returns whether a message contains a public-looking HTTP URL."""
     match = URL_PATTERN.search(text or "")
     if not match:
         return False
@@ -67,150 +97,118 @@ def _is_public_url(text: str) -> bool:
 
 
 def _first_url(text: str) -> str:
+    """Extracts the first URL from a user message."""
     match = URL_PATTERN.search(text or "")
     return match.group(0).rstrip(").,") if match else ""
 
 
-async def _send_dashboard(contact_id: str):
-    settings = await get_chat_settings(contact_id)
-    body = DASHBOARD_BODY.format(
-        location=settings.get("location", "Delhi"),
-        department=settings.get("department", "General"),
-        language=settings.get("language", "Hindi"),
+async def require_streamlit_user(
+    x_user_id: str = Header(default=""),
+    x_api_secret: str = Header(default=""),
+) -> str:
+    """Protects frontend APIs with an allowed user id and optional shared secret."""
+    if Config.API_SHARED_SECRET and x_api_secret != Config.API_SHARED_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid API secret")
+    if not Config.is_streamlit_user_allowed(x_user_id):
+        raise HTTPException(status_code=403, detail="User id is not allowed")
+    return x_user_id
+
+
+@app.get("/health")
+async def health() -> dict[str, bool]:
+    """Lightweight health check for Render and uptime checks."""
+    return {"ok": True}
+
+
+@app.post("/api/articles/text", response_model=ArticleResponse)
+async def create_text_article(request: ArticleRequest, user_id: str = Depends(require_streamlit_user)):
+    """Creates a Hindi article from pasted text or a topic brief."""
+    article = await news_service.from_text(
+        request.text,
+        _settings(request.location, request.department),
+        {"channel": "streamlit", "user_id": user_id},
     )
-    await send_text(contact_id, WELCOME_TEXT)
-    await send_text(contact_id, body)
-    await send_flow(contact_id)
+    return ArticleResponse(article=article)
 
 
-async def _save_and_send(contact_id: str, source_type: str, article: str, sender: dict):
-    await save_article(
-        {
-            "source_type": source_type,
-            "generated_article_hindi": article,
-            "created_at": datetime.now(),
-            "contact_id": contact_id,
-            "sender": sender,
-        }
+@app.post("/api/articles/latest-topic", response_model=ArticleResponse)
+async def create_latest_topic_article(request: ArticleRequest, user_id: str = Depends(require_streamlit_user)):
+    """Creates a Hindi article from the latest verified updates around a topic."""
+    article = await news_service.from_latest_topic(
+        request.text,
+        _settings(request.location, request.department),
+        {"channel": "streamlit", "user_id": user_id},
     )
-    await send_text(contact_id, article)
+    return ArticleResponse(article=article)
 
 
-async def task_compile_audio(contact_id: str, media_id: str, settings: dict, sender: dict):
-    try:
-        audio_bytes, mime_type = await download_media(media_id)
-        article = await supervisor.compile_audio_bytes(audio_bytes, mime_type, settings, media_id)
-        await _save_and_send(contact_id, "audio_to_news", article, sender)
-    except Exception as exc:
-        logger.exception("Audio compilation failed")
-        await send_text(contact_id, ERROR_AUDIO.format(error=str(exc)))
+@app.post("/api/articles/professionalize", response_model=ArticleResponse)
+async def professionalize_article(request: ArticleRequest, user_id: str = Depends(require_streamlit_user)):
+    """Rewrites a draft article into polished Hindi newsroom copy."""
+    article = await news_service.professionalize(
+        request.text,
+        _settings(request.location, request.department),
+        {"channel": "streamlit", "user_id": user_id},
+    )
+    return ArticleResponse(article=article)
 
 
-async def task_compile_telegram_audio(chat_id: int, file_id: str, mime_type: str, settings: dict, sender: dict):
-    try:
-        file_info = await tg_get_file(file_id)
-        audio_bytes = await tg_download_file(file_info["file_path"])
-        article = await supervisor.compile_audio_bytes(audio_bytes, mime_type, settings, file_id)
-        await save_article(
-            {
-                "source_type": "telegram_audio_to_news",
-                "generated_article_hindi": article,
-                "created_at": datetime.now(),
-                "chat_id": chat_id,
-                "sender": sender,
-            }
-        )
-        await tg_send_message(chat_id, article)
-    except Exception as exc:
-        logger.exception("Telegram audio compilation failed")
-        await tg_send_message(chat_id, ERROR_AUDIO.format(error=str(exc)))
+@app.post("/api/articles/social-link", response_model=ArticleResponse)
+async def create_social_link_article(request: SocialLinkRequest, user_id: str = Depends(require_streamlit_user)):
+    """Creates a Hindi article from a public media URL."""
+    article = await news_service.from_social_link(
+        request.url,
+        _settings(request.location, request.department),
+        {"channel": "streamlit", "user_id": user_id},
+    )
+    return ArticleResponse(article=article)
 
 
-async def task_compile_image(contact_id: str, media_id: str, settings: dict, sender: dict):
-    try:
-        image_bytes, mime_type = await download_media(media_id)
-        article = await supervisor.compile_image_bytes(image_bytes, mime_type, settings)
-        await _save_and_send(contact_id, "ocr_to_news", article, sender)
-    except Exception as exc:
-        logger.exception("Image/OCR compilation failed")
-        await send_text(contact_id, ERROR_IMAGE.format(error=str(exc)))
+@app.post("/api/articles/audio", response_model=ArticleResponse)
+async def create_audio_article(
+    location: str = "Delhi",
+    department: str = "General",
+    file: UploadFile = File(...),
+    user_id: str = Depends(require_streamlit_user),
+):
+    """Creates a Hindi article from uploaded audio bytes."""
+    audio_bytes = await file.read()
+    article = await news_service.from_audio(
+        audio_bytes,
+        file.content_type or "audio/ogg",
+        _settings(location, department),
+        file.filename or "streamlit_audio",
+        {"channel": "streamlit", "user_id": user_id, "filename": file.filename},
+    )
+    return ArticleResponse(article=article)
 
 
-async def task_compile_telegram_image(chat_id: int, file_id: str, mime_type: str, settings: dict, sender: dict):
-    try:
-        file_info = await tg_get_file(file_id)
-        image_bytes = await tg_download_file(file_info["file_path"])
-        article = await supervisor.compile_image_bytes(image_bytes, mime_type, settings)
-        await save_article(
-            {
-                "source_type": "telegram_ocr_to_news",
-                "generated_article_hindi": article,
-                "created_at": datetime.now(),
-                "chat_id": chat_id,
-                "sender": sender,
-            }
-        )
-        await tg_send_message(chat_id, article)
-    except Exception as exc:
-        logger.exception("Telegram image compilation failed")
-        await tg_send_message(chat_id, ERROR_IMAGE.format(error=str(exc)))
+@app.post("/api/articles/image", response_model=ArticleResponse)
+async def create_image_article(
+    location: str = "Delhi",
+    department: str = "General",
+    file: UploadFile = File(...),
+    user_id: str = Depends(require_streamlit_user),
+):
+    """Creates a Hindi article from an uploaded image or scanned document."""
+    image_bytes = await file.read()
+    article = await news_service.from_image(
+        image_bytes,
+        file.content_type or "image/jpeg",
+        _settings(location, department),
+        {"channel": "streamlit", "user_id": user_id, "filename": file.filename},
+    )
+    return ArticleResponse(article=article)
 
 
-async def task_compile_social_link(contact_id: str, url: str, settings: dict, sender: dict):
-    try:
-        article = await supervisor.compile_social_link(url, settings)
-        await _save_and_send(contact_id, "social_link_to_news", article, sender)
-    except Exception as exc:
-        logger.exception("Social link compilation failed")
-        await send_text(contact_id, ERROR_SOCIAL.format(error=str(exc)))
+@app.get("/api/articles/history")
+async def article_history(limit: int = 20, user_id: str = Depends(require_streamlit_user)):
+    """Returns recent generated articles for the Streamlit history tab."""
+    return {"articles": await get_recent_articles(limit)}
 
 
-async def task_compile_telegram_social_link(chat_id: int, url: str, settings: dict, sender: dict):
-    try:
-        article = await supervisor.compile_social_link(url, settings)
-        await save_article(
-            {
-                "source_type": "telegram_social_link_to_news",
-                "generated_article_hindi": article,
-                "created_at": datetime.now(),
-                "chat_id": chat_id,
-                "sender": sender,
-            }
-        )
-        await tg_send_message(chat_id, article)
-    except Exception as exc:
-        logger.exception("Telegram social link compilation failed")
-        await tg_send_message(chat_id, ERROR_SOCIAL.format(error=str(exc)))
-
-
-async def task_compile_text(contact_id: str, text: str, settings: dict, sender: dict):
-    try:
-        article = await supervisor.compile_topic_search(text, settings)
-        await _save_and_send(contact_id, "text_to_news", article, sender)
-    except Exception as exc:
-        logger.exception("Text compilation failed")
-        await send_text(contact_id, ERROR_TEXT.format(error=str(exc)))
-
-
-async def task_compile_telegram_text(chat_id: int, text: str, settings: dict, sender: dict):
-    try:
-        article = await supervisor.compile_topic_search(text, settings)
-        await save_article(
-            {
-                "source_type": "telegram_text_to_news",
-                "generated_article_hindi": article,
-                "created_at": datetime.now(),
-                "chat_id": chat_id,
-                "sender": sender,
-            }
-        )
-        await tg_send_message(chat_id, article)
-    except Exception as exc:
-        logger.exception("Telegram text compilation failed")
-        await tg_send_message(chat_id, ERROR_TEXT.format(error=str(exc)))
-
-
-async def _send_telegram_dashboard(chat_id: int):
+async def _send_telegram_dashboard(chat_id: int) -> None:
+    """Sends Telegram users the compact command menu."""
     settings = await get_chat_settings(chat_id)
     body = DASHBOARD_BODY.format(
         location=settings.get("location", "Delhi"),
@@ -223,109 +221,130 @@ async def _send_telegram_dashboard(chat_id: int):
             [{"text": "Social link to news", "callback_data": "social_link_to_news"}],
             [{"text": "OCR to news", "callback_data": "ocr_to_news"}],
             [{"text": "Text to news", "callback_data": "text_to_news"}],
+            [{"text": "Latest topic", "callback_data": "latest_topic"}],
+            [{"text": "Professionalize article", "callback_data": "professionalize"}],
         ]
     }
     await tg_send_message(chat_id, f"{WELCOME_TEXT}\n\n{body}", reply_markup=markup)
 
 
-@app.get("/api/webhook")
-async def verify_whatsapp_webhook(request: Request):
-    params = request.query_params
-    if (
-        params.get("hub.mode") == "subscribe"
-        and params.get("hub.verify_token") == Config.WHATSAPP_VERIFY_TOKEN
-    ):
-        return PlainTextResponse(params.get("hub.challenge", ""))
-    return JSONResponse(status_code=403, content={"ok": False})
-
-
-@app.post("/api/webhook")
-async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
+async def task_compile_telegram_audio(chat_id: int, file_id: str, mime_type: str, settings: dict, sender: dict):
+    """Downloads Telegram audio, generates an article, and sends the result."""
     try:
-        payload = await request.json()
-        messages = _extract_messages(payload)
-        for message in messages:
-            contact_id = message.get("from")
-            if not contact_id or not Config.is_contact_allowed(contact_id):
-                continue
-
-            settings = await get_chat_settings(contact_id)
-            sender = {"contact_id": contact_id, "whatsapp_message_id": message.get("id")}
-            message_type = message.get("type")
-
-            if message_type == "interactive":
-                interactive = message.get("interactive", {})
-                selected = (
-                    interactive.get("list_reply", {}).get("id")
-                    or interactive.get("button_reply", {}).get("id")
-                    or interactive.get("nfm_reply", {}).get("response_json")
-                )
-                await send_text(contact_id, f"Selected: {selected}\n\n{SETTINGS_HELP}")
-                continue
-
-            if message_type == "audio":
-                media_id = message["audio"]["id"]
-                await send_text(contact_id, AUDIO_RECEIVED)
-                background_tasks.add_task(task_compile_audio, contact_id, media_id, settings, sender)
-                continue
-
-            if message_type == "image":
-                media_id = message["image"]["id"]
-                await send_text(contact_id, IMAGE_RECEIVED)
-                background_tasks.add_task(task_compile_image, contact_id, media_id, settings, sender)
-                continue
-
-            if message_type == "document" and message.get("document", {}).get("mime_type", "").startswith("image/"):
-                media_id = message["document"]["id"]
-                await send_text(contact_id, IMAGE_RECEIVED)
-                background_tasks.add_task(task_compile_image, contact_id, media_id, settings, sender)
-                continue
-
-            text = message.get("text", {}).get("body", "").strip() if message_type == "text" else ""
-            if not text:
-                continue
-
-            if text.lower() in {"/start", "start", "menu", "/menu"}:
-                await _send_dashboard(contact_id)
-            elif text.startswith("/location"):
-                value = text[len("/location"):].strip()
-                if value:
-                    await update_chat_settings(contact_id, {"location": value})
-                    await send_text(contact_id, f"Location updated to {value}.")
-            elif text.startswith("/dept"):
-                value = text[len("/dept"):].strip()
-                if value:
-                    await update_chat_settings(contact_id, {"department": value})
-                    await send_text(contact_id, f"Department updated to {value}.")
-            elif text.startswith("/lang"):
-                value = text[len("/lang"):].strip()
-                if value:
-                    await update_chat_settings(contact_id, {"language": value})
-                    await send_text(contact_id, f"Language updated to {value}.")
-            elif _is_public_url(text):
-                url = _first_url(text)
-                await send_text(contact_id, SOCIAL_LINK_RECEIVED)
-                background_tasks.add_task(task_compile_social_link, contact_id, url, settings, sender)
-            else:
-                await send_text(contact_id, TEXT_RECEIVED)
-                background_tasks.add_task(task_compile_text, contact_id, text, settings, sender)
-
-        return {"ok": True}
+        file_info = await tg_get_file(file_id)
+        audio_bytes = await tg_download_file(file_info["file_path"])
+        article = await news_service.from_audio(
+            audio_bytes,
+            mime_type,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            file_id,
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
     except Exception as exc:
-        logger.exception("Webhook processing error: %s", exc)
-        return JSONResponse(status_code=200, content={"ok": True})
+        logger.exception("Telegram audio compilation failed")
+        await tg_send_message(chat_id, ERROR_AUDIO.format(error=str(exc)))
+
+
+async def task_compile_telegram_image(chat_id: int, file_id: str, mime_type: str, settings: dict, sender: dict):
+    """Downloads Telegram image media, generates an article, and sends it."""
+    try:
+        file_info = await tg_get_file(file_id)
+        image_bytes = await tg_download_file(file_info["file_path"])
+        article = await news_service.from_image(
+            image_bytes,
+            mime_type,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
+    except Exception as exc:
+        logger.exception("Telegram image compilation failed")
+        await tg_send_message(chat_id, ERROR_IMAGE.format(error=str(exc)))
+
+
+async def task_compile_telegram_social_link(chat_id: int, url: str, settings: dict, sender: dict):
+    """Generates an article from a public URL received on Telegram."""
+    try:
+        article = await news_service.from_social_link(
+            url,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
+    except Exception as exc:
+        logger.exception("Telegram social link compilation failed")
+        await tg_send_message(chat_id, ERROR_SOCIAL.format(error=str(exc)))
+
+
+async def task_compile_telegram_text(chat_id: int, text: str, settings: dict, sender: dict):
+    """Generates an article from Telegram text and sends it back."""
+    try:
+        article = await news_service.from_text(
+            text,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
+    except Exception as exc:
+        logger.exception("Telegram text compilation failed")
+        await tg_send_message(chat_id, ERROR_TEXT.format(error=str(exc)))
+
+
+async def task_compile_telegram_latest_topic(chat_id: int, topic: str, settings: dict, sender: dict):
+    """Generates an article from latest verified topic updates."""
+    try:
+        article = await news_service.from_latest_topic(
+            topic,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
+    except Exception as exc:
+        logger.exception("Telegram latest topic compilation failed")
+        await tg_send_message(chat_id, ERROR_TEXT.format(error=str(exc)))
+
+
+async def task_compile_telegram_professionalize(chat_id: int, draft: str, settings: dict, sender: dict):
+    """Rewrites a draft into a polished Hindi news article."""
+    try:
+        article = await news_service.professionalize(
+            draft,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
+    except Exception as exc:
+        logger.exception("Telegram professionalize compilation failed")
+        await tg_send_message(chat_id, ERROR_TEXT.format(error=str(exc)))
 
 
 @app.post("/api/telegram-webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receives Telegram updates and routes them into the shared article service."""
     try:
         body = await request.json()
 
         if "callback_query" in body:
             callback = body["callback_query"]
             chat_id = callback["message"]["chat"]["id"]
+            await tg_answer_callback_query(callback["id"])
             if Config.is_chat_allowed(chat_id):
-                await tg_send_message(chat_id, SETTINGS_HELP)
+                data = callback.get("data", "")
+                mode_map = {
+                    "audio_to_news": ("audio", MODE_PROMPT_AUDIO),
+                    "social_link_to_news": ("social_link", MODE_PROMPT_LINK),
+                    "ocr_to_news": ("image", MODE_PROMPT_IMAGE),
+                    "text_to_news": ("text", MODE_PROMPT_TEXT),
+                    "latest_topic": ("latest_topic", MODE_PROMPT_TOPIC),
+                    "professionalize": ("professionalize", MODE_PROMPT_PROFESSIONALIZE),
+                }
+                if data in mode_map:
+                    mode, prompt = mode_map[data]
+                    await set_chat_mode(chat_id, mode)
+                    await tg_send_message(chat_id, prompt)
+                else:
+                    await tg_send_message(chat_id, SETTINGS_HELP)
             return {"ok": True}
 
         message = body.get("message")
@@ -381,8 +400,14 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         if not text:
             return {"ok": True}
 
+        mode = await get_chat_mode(chat_id)
+
         if text.lower() in {"/start", "start", "menu", "/menu"}:
             await _send_telegram_dashboard(chat_id)
+            await set_chat_mode(chat_id, None)
+        elif text.startswith("/cancel"):
+            await set_chat_mode(chat_id, None)
+            await tg_send_message(chat_id, MODE_CLEARED)
         elif text.startswith("/location"):
             value = text[len("/location"):].strip()
             if value:
@@ -394,10 +419,30 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 await update_chat_settings(chat_id, {"department": value})
                 await tg_send_message(chat_id, f"Department updated to {value}.")
         elif text.startswith("/lang"):
-            value = text[len("/lang"):].strip()
-            if value:
-                await update_chat_settings(chat_id, {"language": value})
-                await tg_send_message(chat_id, f"Language updated to {value}.")
+            await tg_send_message(chat_id, "Language is fixed to Hindi for publish-ready output.")
+        elif mode == "text":
+            await tg_send_message(chat_id, TEXT_RECEIVED)
+            background_tasks.add_task(task_compile_telegram_text, chat_id, text, settings, sender)
+            await set_chat_mode(chat_id, None)
+        elif mode == "latest_topic":
+            await tg_send_message(chat_id, TEXT_RECEIVED)
+            background_tasks.add_task(task_compile_telegram_latest_topic, chat_id, text, settings, sender)
+            await set_chat_mode(chat_id, None)
+        elif mode == "professionalize":
+            await tg_send_message(chat_id, TEXT_RECEIVED)
+            background_tasks.add_task(task_compile_telegram_professionalize, chat_id, text, settings, sender)
+            await set_chat_mode(chat_id, None)
+        elif mode == "social_link":
+            if _is_public_url(text):
+                url = _first_url(text)
+                await tg_send_message(chat_id, SOCIAL_LINK_RECEIVED)
+                background_tasks.add_task(task_compile_telegram_social_link, chat_id, url, settings, sender)
+            else:
+                await tg_send_message(chat_id, "Please send a valid public URL.")
+        elif mode == "image":
+            await tg_send_message(chat_id, "Please send a photo or document.")
+        elif mode == "audio":
+            await tg_send_message(chat_id, "Please send a voice message or audio file.")
         elif _is_public_url(text):
             url = _first_url(text)
             await tg_send_message(chat_id, SOCIAL_LINK_RECEIVED)

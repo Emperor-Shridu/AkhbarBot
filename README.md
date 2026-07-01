@@ -1,64 +1,99 @@
-# AkhbarBot v3 (Dual WhatsApp + Telegram Backend)
+# AkhbarBot
 
-An asynchronous FastAPI news assistant that runs the same news-generation backend for both WhatsApp Business API and Telegram. WhatsApp support was added because Telegram access can be banned or restricted for Indian users, while the already functional Telegram bot remains supported on a separate webhook.
+AkhbarBot is a Hindi news article generator with a Telegram bot backend and a Streamlit web frontend. The old WhatsApp Business API layer has been removed. Telegram and Streamlit now share one modular article-generation service, so every input path produces the same publish-ready newsroom output.
 
-## Four News Creation Paths
+## News Creation Paths
 
-1. **Audio to news**: User sends WhatsApp or Telegram audio/voice. The app downloads media from the channel API, chunks audio when useful, transcribes facts with Gemini, and writes a Hindi news article.
-2. **Social video/audio link to news**: User sends a Facebook, Instagram, YouTube, or other public media URL. The app extracts audio with `yt-dlp`, verifies context with Gemini Search Grounding, and writes the article.
-3. **Document/photo OCR to news**: User sends an image/photo/document. Gemini Vision extracts text/entities and the editor turns verified material into a news article.
-4. **Text to news article**: User sends a topic, rough brief, or pasted text. Gemini Search Grounding verifies facts before final writing.
+1. Audio upload or Telegram voice/audio to news.
+2. Image or scanned document OCR to news.
+3. Public social media URL to news through `yt-dlp` audio extraction plus search-grounded verification.
+4. Text, topic, or pasted facts to news.
+5. Latest topic research to a newly worded article.
+6. Professional rewrite of an existing article draft.
 
-There are intentionally no extra modes such as trend feeds or multi-button compile queues.
+All final output is Hindi only and formatted as a publish-ready article with a headline and body. The editor prompt explicitly avoids mentioning the source format, recording, OCR, bot, or internal workflow.
+
+## Recommended Free Deployment
+
+Use two free-friendly surfaces:
+
+- **Render Free Web Service** for FastAPI and the Telegram webhook.
+- **Streamlit Community Cloud** for the website frontend.
+
+This split is intentional. Telegram needs a public webhook URL, while Streamlit needs its own interactive app server. Render web services expose one public HTTP port, and free services spin down after idle time. Keeping Streamlit on Streamlit Cloud avoids fighting that port model and leaves the Render service focused on backend work.
 
 ## Project Structure
 
 ```text
 E:/autoPapaPython/
 |-- agents/
-|   |-- audio.py        # Audio transcription and factual extraction
-|   |-- ocr.py          # OCR and image/document extraction
-|   |-- trend.py        # Search-grounded verification for text and links
-|   |-- editor.py       # Final news article synthesis
-|   `-- supervisor.py   # Four-path orchestration
+|   |-- audio.py
+|   |-- ocr.py
+|   |-- trend.py
+|   |-- editor.py
+|   `-- supervisor.py
+|-- services/
+|   `-- news_service.py      # Shared article service for Telegram and Streamlit
 |-- utils/
-|   |-- whatsapp.py     # WhatsApp Cloud API media and message helpers
-|   |-- social_audio.py # yt-dlp audio extraction from public media URLs
-|   |-- ogg_splitter.py # Pure-python Ogg page segmenter
-|   `-- telegram.py     # Telegram media and message helpers
-|-- prompts.py          # All LLM prompts/gems in one editable file
-|-- user_interactions.py # All user-facing channel text in one editable file
-|-- config.py           # Environment parsing and validation
-|-- database.py         # MongoDB connection, settings, and article storage
-|-- main.py             # FastAPI WhatsApp and Telegram webhook entrypoints
-|-- IMPLEMENTATION.md   # Technical decisions and prompt locations
-|-- VERSIONS.md         # Short interview problem/solution log
+|   |-- social_audio.py
+|   |-- ogg_splitter.py
+|   `-- telegram.py
+|-- docs/
+|   |-- DEPLOYMENT.md
+|   `-- interview_portfolio_log.md
+|-- main.py                  # FastAPI backend and Telegram webhook
+|-- streamlit_app.py          # Streamlit frontend
+|-- prompts.py
+|-- user_interactions.py
+|-- config.py
+|-- database.py
+|-- render.yaml
+|-- .env.example
 `-- requirements.txt
 ```
 
 ## Environment
 
-Create `.env` with:
+Create `.env` locally from `.env.example`:
 
 ```env
-WHATSAPP_ACCESS_TOKEN=your_meta_cloud_api_token
-WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
-WHATSAPP_VERIFY_TOKEN=your_webhook_verify_token
-WHATSAPP_API_VERSION=v20.0
-WHATSAPP_FLOW_ID=optional_published_flow_id
-ALLOWED_CONTACTS=optional_comma_separated_whatsapp_numbers
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash-lite
+MONGO_URI=your_mongodb_uri
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 ALLOWED_CHAT_ID=optional_comma_separated_telegram_chat_ids
-MONGO_URI=your_mongodb_uri
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
+STREAMLIT_USER_IDS=demo,father
+API_SHARED_SECRET=choose_a_long_random_secret
+BACKEND_BASE_URL=http://localhost:8000
 ```
 
-Run locally:
+`demo` is included for interview showcase access. Replace or supplement it with your father's user id for real use.
+
+## Run Locally
+
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Start the backend:
+
+```bash
 python -m uvicorn main:app --reload
 ```
 
-Register Meta WhatsApp at `/api/webhook`. Register Telegram at `/api/telegram-webhook`. Both channels use the same agents, prompts, user text files, MongoDB article storage, and four-path methodology.
+Start the website:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Register Telegram webhook after the Render backend is live:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<your-render-service>.onrender.com/api/telegram-webhook"
+```
+
+The Streamlit app includes a WhatsApp share button. It opens a prefilled WhatsApp message so the final article can be sent to the office group from the user's device.
+
