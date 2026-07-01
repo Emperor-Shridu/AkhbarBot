@@ -97,6 +97,21 @@ class NewsService:
         await self._save("latest_topic_to_news", formatted, actor)
         return formatted, stories
 
+    async def from_latest_topic_article(
+        self,
+        topic: str,
+        settings: NewsSettings,
+        actor: dict[str, Any],
+    ) -> str:
+        """Generates a full Hindi article from the latest verified updates around a topic."""
+        stories = await self.supervisor.compile_latest_topic(topic, settings.as_dict())
+        if not stories:
+            article = "No recent stories found for this topic."
+        else:
+            article = await self.supervisor.expand_story(stories[0], settings.as_dict())
+        await self._save("latest_topic_to_news", article, actor)
+        return article
+
     async def expand_story(
         self,
         story: dict[str, Any],

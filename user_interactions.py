@@ -55,6 +55,7 @@ MODE_CLEARED = (
     "Send /start to see the menu again, or just send content and I will pick the right path."
 )
 
+VIDEO_RECEIVED = "Video received. I am extracting facts and preparing the news article."
 AUDIO_RECEIVED = "Audio received. I am extracting facts and preparing the news article."
 IMAGE_RECEIVED = "Document/photo received. I am running OCR and preparing the news article."
 SOCIAL_LINK_RECEIVED = "Social media link received. I am extracting audio with yt-dlp and verifying facts."
@@ -68,6 +69,7 @@ SETTINGS_HELP = (
 )
 
 ERROR_AUDIO = "Audio analysis failed: {error}"
+ERROR_VIDEO = "Video analysis failed: {error}"
 ERROR_IMAGE = "Document/photo analysis failed: {error}"
 ERROR_SOCIAL = "Social link analysis failed: {error}"
 ERROR_TEXT = "Text analysis failed: {error}"

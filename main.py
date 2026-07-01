@@ -13,6 +13,7 @@ from config import Config
 from database import get_chat_settings, get_chat_mode, get_pending_stories, get_recent_articles, init_indexes, set_chat_mode, set_pending_stories, update_chat_settings
 from services.news_service import NewsService, NewsSettings
 from user_interactions import (
+    VIDEO_RECEIVED,
     AUDIO_RECEIVED,
     DASHBOARD_BODY,
     ERROR_AUDIO,
@@ -32,6 +33,7 @@ from user_interactions import (
     SOCIAL_LINK_RECEIVED,
     TEXT_RECEIVED,
     WELCOME_TEXT,
+    ERROR_VIDEO,
 )
 from utils.telegram import answer_callback_query as tg_answer_callback_query
 from utils.telegram import download_file as tg_download_file
@@ -43,6 +45,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+NOISE_TEXTS = {"hi", "hello", "hey", "ok", "okay", "hmm", "yes", "no", "test", "testing"}
 
 URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 Config.validate()
@@ -135,7 +139,7 @@ async def create_text_article(request: ArticleRequest, user_id: str = Depends(re
 @app.post("/api/articles/latest-topic", response_model=ArticleResponse)
 async def create_latest_topic_article(request: ArticleRequest, user_id: str = Depends(require_streamlit_user)):
     """Creates a Hindi article from the latest verified updates around a topic."""
-    article = await news_service.from_latest_topic(
+    article = await news_service.from_latest_topic_article(
         request.text,
         _settings(request.location, request.department),
         {"channel": "streamlit", "user_id": user_id},
@@ -262,6 +266,24 @@ async def task_compile_telegram_image(chat_id: int, file_id: str, mime_type: str
     except Exception as exc:
         logger.exception("Telegram image compilation failed")
         await tg_send_message(chat_id, ERROR_IMAGE.format(error=str(exc)))
+
+
+async def task_compile_telegram_video(chat_id: int, file_id: str, mime_type: str, settings: dict, sender: dict):
+    """Downloads Telegram video media, generates an article, and sends it."""
+    try:
+        file_info = await tg_get_file(file_id)
+        video_bytes = await tg_download_file(file_info["file_path"])
+        article = await news_service.from_audio(
+            video_bytes,
+            mime_type,
+            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+            file_id,
+            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+        )
+        await tg_send_message(chat_id, article)
+    except Exception as exc:
+        logger.exception("Telegram video compilation failed")
+        await tg_send_message(chat_id, ERROR_VIDEO.format(error=str(exc)))
 
 
 async def task_compile_telegram_social_link(chat_id: int, url: str, settings: dict, sender: dict):
@@ -417,6 +439,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             background_tasks.add_task(task_compile_telegram_audio, chat_id, file_id, mime_type, settings, sender)
             return {"ok": True}
 
+        if "video" in message:
+            file_id = message["video"]["file_id"]
+            mime_type = message["video"].get("mime_type", "video/mp4")
+            await tg_send_message(chat_id, VIDEO_RECEIVED)
+            background_tasks.add_task(task_compile_telegram_video, chat_id, file_id, mime_type, settings, sender)
+            return {"ok": True}
+
         if "photo" in message:
             file_id = message["photo"][-1]["file_id"]
             await tg_send_message(chat_id, IMAGE_RECEIVED)
@@ -434,9 +463,16 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 await tg_send_message(chat_id, AUDIO_RECEIVED)
                 background_tasks.add_task(task_compile_telegram_audio, chat_id, doc["file_id"], mime_type, settings, sender)
                 return {"ok": True}
+            if mime_type.startswith("video/"):
+                await tg_send_message(chat_id, VIDEO_RECEIVED)
+                background_tasks.add_task(task_compile_telegram_video, chat_id, doc["file_id"], mime_type, settings, sender)
+                return {"ok": True}
 
         text = message.get("text", "").strip()
         if not text:
+            return {"ok": True}
+
+        if text.lower() in NOISE_TEXTS:
             return {"ok": True}
 
         mode = await get_chat_mode(chat_id)

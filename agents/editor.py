@@ -15,6 +15,9 @@ class EditorAgent:
         Synthesizes the consolidated facts into a cohesive news report in Hindi.
         Applies strict Telegram formatting rules to ensure delivery uptime.
         """
+        if not consolidated_context or not consolidated_context.strip():
+            raise ValueError("No factual content available to generate an article.")
+        
         location = settings.get("location", "Delhi")
         department = settings.get("department", "General")
         

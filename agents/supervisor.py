@@ -121,7 +121,6 @@ class SupervisorAgent:
         language = settings.get("language", "Hindi")
         now = datetime.now()
         
-        # Step 1: Fact Verification & Search Grounding
         stories = await self.trend_agent.search_topic(
             topic=topic,
             location=location,
@@ -129,6 +128,9 @@ class SupervisorAgent:
             language=language,
             timestamp=now
         )
+        
+        if not stories:
+            raise ValueError("No stories found for this topic.")
         
         # Step 2: Format stories for selection
         stories_context = self._format_stories_for_selection(stories)
@@ -168,6 +170,8 @@ class SupervisorAgent:
             language=language,
             timestamp=datetime.now(),
         )
+        if not stories:
+            raise ValueError("No latest stories found for this topic.")
         return stories
 
     async def expand_story(self, story: dict, settings: dict) -> str:
