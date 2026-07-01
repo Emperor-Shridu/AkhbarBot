@@ -1,0 +1,13 @@
+name: Keep Streamlit Frontend Alive
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit app
+        run: curl -sf https://augmented-frontend.streamlit.app/ || echo "Health check failed"
