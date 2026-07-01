@@ -117,13 +117,16 @@ def render_generator(user_id: str) -> None:
 
     with tabs[1]:
         topic = st.text_input("Topic to fetch latest verified updates")
-        if st.button("Fetch Latest Article", type="primary", disabled=not topic.strip()):
+        if st.button("Fetch Latest Topic", type="primary", disabled=not topic.strip()):
             with st.spinner("Researching latest updates..."):
-                st.session_state.latest_article = post_json(
-                    "/api/articles/latest-topic",
-                    {"text": topic, **base_payload},
-                    user_id,
-                )
+                try:
+                    st.session_state.latest_article = post_json(
+                        "/api/articles/latest-topic",
+                        {"text": topic, **base_payload},
+                        user_id,
+                    )
+                except Exception as exc:
+                    st.error(f"Latest topic failed: {exc}")
         show_article(st.session_state.get("latest_article", ""), key="latest_article")
 
     with tabs[2]:

@@ -9,3 +9,4 @@ python-dotenv>=1.0.1
 python-multipart>=0.0.9
 yt-dlp>=2025.1.0
 googlesearch-python>=1.2.3
+imageio-ffmpeg>=0.5.1

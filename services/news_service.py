@@ -104,7 +104,11 @@ class NewsService:
         actor: dict[str, Any],
     ) -> str:
         """Generates a full Hindi article from the latest verified updates around a topic."""
-        stories = await self.supervisor.compile_latest_topic(topic, settings.as_dict())
+        try:
+            stories = await self.supervisor.compile_latest_topic(topic, settings.as_dict())
+        except Exception as exc:
+            raise ValueError(f"Could not find stories for topic '{topic}': {exc}") from exc
+
         if not stories:
             article = "No recent stories found for this topic."
         else:

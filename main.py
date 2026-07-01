@@ -39,6 +39,7 @@ from utils.telegram import answer_callback_query as tg_answer_callback_query
 from utils.telegram import download_file as tg_download_file
 from utils.telegram import get_file as tg_get_file
 from utils.telegram import send_message as tg_send_message
+from utils.video_audio_extract import extract_audio_from_video
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,11 +140,15 @@ async def create_text_article(request: ArticleRequest, user_id: str = Depends(re
 @app.post("/api/articles/latest-topic", response_model=ArticleResponse)
 async def create_latest_topic_article(request: ArticleRequest, user_id: str = Depends(require_streamlit_user)):
     """Creates a Hindi article from the latest verified updates around a topic."""
-    article = await news_service.from_latest_topic_article(
-        request.text,
-        _settings(request.location, request.department),
-        {"channel": "streamlit", "user_id": user_id},
-    )
+    try:
+        article = await news_service.from_latest_topic_article(
+            request.text,
+            _settings(request.location, request.department),
+            {"channel": "streamlit", "user_id": user_id},
+        )
+    except Exception as exc:
+        logger.exception("Streamlit latest topic compilation failed")
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ArticleResponse(article=article)
 
 
@@ -269,17 +274,32 @@ async def task_compile_telegram_image(chat_id: int, file_id: str, mime_type: str
 
 
 async def task_compile_telegram_video(chat_id: int, file_id: str, mime_type: str, settings: dict, sender: dict):
-    """Downloads Telegram video media, generates an article, and sends it."""
+    """Downloads Telegram video media, extracts audio if present, and generates an article."""
     try:
         file_info = await tg_get_file(file_id)
         video_bytes = await tg_download_file(file_info["file_path"])
-        article = await news_service.from_audio(
-            video_bytes,
-            mime_type,
-            _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
-            file_id,
-            {"channel": "telegram", "chat_id": chat_id, "sender": sender},
-        )
+
+        extracted_audio = None
+        if (mime_type or "").startswith("video/"):
+            extracted_audio = extract_audio_from_video(video_bytes)
+
+        if extracted_audio:
+            await tg_send_message(chat_id, VIDEO_RECEIVED)
+            article = await news_service.from_audio(
+                extracted_audio,
+                "audio/wav",
+                _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+                file_id,
+                {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+            )
+        else:
+            article = await news_service.from_audio(
+                video_bytes,
+                mime_type or "video/mp4",
+                _settings(settings.get("location", "Delhi"), settings.get("department", "General")),
+                file_id,
+                {"channel": "telegram", "chat_id": chat_id, "sender": sender},
+            )
         await tg_send_message(chat_id, article)
     except Exception as exc:
         logger.exception("Telegram video compilation failed")
