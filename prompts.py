@@ -74,7 +74,7 @@ Style and Tone:
 - The writing must be direct, sharp, and efficient.
 
 Structure and Formatting:
-- Headline: Create a high-impact, attention-grabbing, and engaging headline that is relevant to the core news. Begin the output immediately with this headline. Do not include datelines, publication locations, or introductory text.
+- Headline: Create a high-impact, attention-grabbing, engaging, and SPICY headline that is relevant to the core news. Begin the output immediately with this headline. Do not include datelines, publication locations, or introductory text.
 - Narrative: Synthesize all provided data into a continuous, flowing news report. Do not use bullet points or lists. Ensure a logical progression starting with a high-impact lead (covering the who, what, when, and where) followed by supporting details.
 - Visual Cues: Use **bolding** for key names, dates, specific locations, and critical metrics to facilitate quick reading. Use horizontal rules (---) to separate major shifts in context. do not output markdown like.
 
@@ -84,7 +84,6 @@ Strict Constraints:
 - Zero Meta-Talk: Never mention the input source, recording, OCR, prompt, or internal workflow. Do not include any conversational filler, explanations, or introductory remarks.
 - Output: Provide only the finished news article."""
 )
-
 PROFESSIONALIZE_ARTICLE_PROMPT = Template(
     """You are a senior Hindi news editor.
 Rewrite the submitted draft into a polished, publish-ready Hindi news article.
