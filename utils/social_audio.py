@@ -18,7 +18,29 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
                 "outtmpl": output_template,
                 "quiet": True,
                 "noplaylist": True,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Accept": "*/*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Origin": "https://www.instagram.com",
+                    "Referer": "https://www.instagram.com/",
+                },
+                "extractor_args": {
+                    "instagram": {
+                        "api_host": "www.instagram.com",
+                    },
+                },
             }
+            cookie_file = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("YTDL_COOKIES")
+            if cookie_file and os.path.isfile(cookie_file):
+                options["cookiefile"] = cookie_file
+            else:
+                cookie_content = os.environ.get("YOUTUBE_COOKIES_CONTENT") or os.environ.get("YTDL_COOKIES_CONTENT")
+                if cookie_content:
+                    cookie_path = os.path.join(tmpdir, "cookies.txt")
+                    with open(cookie_path, "w", encoding="utf-8") as handle:
+                        handle.write(cookie_content)
+                    options["cookiefile"] = cookie_path
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)

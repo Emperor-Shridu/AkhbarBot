@@ -19,5 +19,11 @@ services:
         sync: false
       - key: API_SHARED_SECRET
         generateValue: true
+      - key: YOUTUBE_COOKIES
+        sync: false
+      - key: YOUTUBE_COOKIES_CONTENT
+        sync: false
+      - key: YTDL_COOKIES_CONTENT
+        sync: false
       - key: GEMINI_MODEL
         value: gemini-3.1-flash-lite
