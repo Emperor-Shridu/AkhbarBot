@@ -18,16 +18,28 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
                 "outtmpl": output_template,
                 "quiet": True,
                 "noplaylist": True,
+                "geo_bypass": True,
+                "geo_bypass_country": "US",
+                "nocheckcertificate": True,
                 "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                    "Accept": "*/*",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9",
-                    "Origin": "https://www.instagram.com",
-                    "Referer": "https://www.instagram.com/",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "DNT": "1",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
                 },
                 "extractor_args": {
                     "instagram": {
                         "api_host": "www.instagram.com",
+                    },
+                    "facebook": {
+                        "api_host": "www.facebook.com",
                     },
                 },
             }
@@ -41,18 +53,27 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
                     with open(cookie_path, "w", encoding="utf-8") as handle:
                         handle.write(cookie_content)
                     options["cookiefile"] = cookie_path
-            with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                if not os.path.exists(filename):
-                    matches = [os.path.join(tmpdir, name) for name in os.listdir(tmpdir)]
-                    if not matches:
-                        raise RuntimeError("yt-dlp did not produce a media file")
-                    filename = matches[0]
-                with open(filename, "rb") as handle:
-                    data = handle.read()
-                ext = os.path.splitext(filename)[1].lower()
-                mime_type = "audio/webm" if ext == ".webm" else "audio/mpeg"
-                return data, mime_type
+            try:
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    if not os.path.exists(filename):
+                        matches = [os.path.join(tmpdir, name) for name in os.listdir(tmpdir)]
+                        if not matches:
+                            raise RuntimeError("yt-dlp did not produce a media file")
+                        filename = matches[0]
+                    with open(filename, "rb") as handle:
+                        data = handle.read()
+                    ext = os.path.splitext(filename)[1].lower()
+                    mime_type = "audio/webm" if ext == ".webm" else "audio/mpeg"
+                    return data, mime_type
+            except yt_dlp.utils.DownloadError as exc:
+                if "Cannot parse data" in str(exc):
+                    raise RuntimeError(
+                        "yt-dlp could not extract this social media video. "
+                        "Facebook videos often require cookies. Set the YOUTUBE_COOKIES "
+                        "environment variable to a Netscape-format cookies.txt file from a logged-in browser."
+                    ) from exc
+                raise
 
     return await asyncio.to_thread(_download)
