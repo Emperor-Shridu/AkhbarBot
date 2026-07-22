@@ -10,6 +10,25 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
     except ImportError as exc:
         raise RuntimeError("yt-dlp is required for social link audio extraction") from exc
 
+    def _patch_facebook_ie_impersonation(targets):
+        import yt_dlp.extractor.facebook as fb_mod
+        if getattr(fb_mod.FacebookIE, "_patched_for_impersonate", False):
+            return
+        original_download_webpage = fb_mod.FacebookIE._download_webpage
+        original_download_json = fb_mod.FacebookIE._download_json
+
+        def _patched_webpage(self, *args, **kwargs):
+            kwargs.setdefault("impersonate", targets)
+            return original_download_webpage(self, *args, **kwargs)
+
+        def _patched_json(self, *args, **kwargs):
+            kwargs.setdefault("impersonate", targets)
+            return original_download_json(self, *args, **kwargs)
+
+        fb_mod.FacebookIE._download_webpage = _patched_webpage
+        fb_mod.FacebookIE._download_json = _patched_json
+        fb_mod.FacebookIE._patched_for_impersonate = True
+
     def _download() -> tuple[bytes, str]:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "source.%(ext)s")
@@ -17,6 +36,10 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
                 from curl_cffi import impersonate as _curl_impersonate
             except ImportError:
                 _curl_impersonate = None
+
+            if _curl_impersonate:
+                _patch_facebook_ie_impersonation(["chrome120"])
+
             options = {
                 "format": "bestaudio/best",
                 "outtmpl": output_template,
@@ -41,11 +64,9 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
                 "extractor_args": {
                     "instagram": {
                         "api_host": "www.instagram.com",
-                        **({"impersonate": ["chrome120"]} if _curl_impersonate else {}),
                     },
                     "facebook": {
                         "api_host": "www.facebook.com",
-                        **({"impersonate": ["chrome120"]} if _curl_impersonate else {}),
                     },
                 },
             }
