@@ -13,6 +13,10 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
     def _download() -> tuple[bytes, str]:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "source.%(ext)s")
+            try:
+                from curl_cffi import impersonate as _curl_impersonate
+            except ImportError:
+                _curl_impersonate = None
             options = {
                 "format": "bestaudio/best",
                 "outtmpl": output_template,
@@ -37,9 +41,11 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
                 "extractor_args": {
                     "instagram": {
                         "api_host": "www.instagram.com",
+                        **({"impersonate": ["chrome120"]} if _curl_impersonate else {}),
                     },
                     "facebook": {
                         "api_host": "www.facebook.com",
+                        **({"impersonate": ["chrome120"]} if _curl_impersonate else {}),
                     },
                 },
             }
@@ -71,8 +77,8 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
                 if "Cannot parse data" in str(exc):
                     raise RuntimeError(
                         "yt-dlp could not extract this social media video. "
-                        "Facebook videos often require cookies. Set the YOUTUBE_COOKIES "
-                        "environment variable to a Netscape-format cookies.txt file from a logged-in browser."
+                        "For Facebook/Instagram videos this may be because the page requires browser impersonation. "
+                        "Set the YOUTUBE_COOKIES environment variable to a Netscape-format cookies.txt file."
                     ) from exc
                 raise
 
