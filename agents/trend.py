@@ -34,6 +34,22 @@ def _web_search_context(query: str, max_results: int = 5) -> str:
         return ""
 
 
+def _parse_stories_response(text: str, topic: str = "") -> list[dict]:
+    """Strips markdown fences, parses JSON, and returns story options."""
+    text = _strip_markdown_fences(text)
+    try:
+        data = json.loads(text)
+        stories = data.get("stories", [])
+        if not isinstance(stories, list):
+            raise ValueError("Malformed stories payload")
+        if not stories:
+            raise ValueError("No stories returned from research")
+        return stories[:5]
+    except Exception as exc:
+        logger.warning("Failed to parse stories JSON: %s | payload: %s", exc, text[:500])
+        return [{"title": text[:120], "summary": text, "why_it_matters": topic}]
+
+
 class TrendAgent:
     def __init__(self):
         self.client = genai.Client(api_key=Config.GEMINI_API_KEY)
@@ -70,19 +86,7 @@ class TrendAgent:
         if not text:
             raise ValueError("Empty response from Gemini")
 
-        text = _strip_markdown_fences(text)
-
-        try:
-            data = json.loads(text)
-            stories = data.get("stories", [])
-            if not isinstance(stories, list):
-                raise ValueError("Malformed stories payload")
-            if not stories:
-                raise ValueError("No stories returned from research")
-            return stories[:5]
-        except Exception as exc:
-            logger.warning("Failed to parse stories JSON: %s | payload: %s", exc, text[:500])
-            return [{"title": text[:120], "summary": text, "why_it_matters": topic}]
+        return _parse_stories_response(text, topic=topic)
 
     async def search_latest_topic(self, topic: str, location: str, department: str, language: str, timestamp: datetime) -> list[dict]:
         """Returns multiple parsed story options from web search + Gemini."""
@@ -112,17 +116,5 @@ class TrendAgent:
         if not text:
             raise ValueError("Empty response from Gemini")
 
-        text = _strip_markdown_fences(text)
-
-        try:
-            data = json.loads(text)
-            stories = data.get("stories", [])
-            if not isinstance(stories, list):
-                raise ValueError("Malformed stories payload")
-            if not stories:
-                raise ValueError("No stories returned from research")
-            return stories[:5]
-        except Exception as exc:
-            logger.warning("Failed to parse stories JSON: %s | payload: %s", exc, text[:500])
-            return [{"title": text[:120], "summary": text, "why_it_matters": topic}]
+        return _parse_stories_response(text, topic=topic)
 

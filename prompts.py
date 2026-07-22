@@ -18,12 +18,14 @@ Rules:
 - Use clean Hindi. Keep names and entities in their original form if they are proper nouns."""
 )
 
-OCR_ANALYSIS_PROMPT = """You are an expert Document OCR and entity extraction agent. Analyze the uploaded document image.
+OCR_ANALYSIS_PROMPT = Template(
+    """You are an expert Document OCR and entity extraction agent. Analyze the uploaded document image.
 Your tasks are:
 1. Perform OCR and extract all readable text. Maintain original layout or flow where possible.
 2. Extract key entities: person names, organizations, departments, locations, dates/times, and numbers.
 3. Draft a clean, structured factual summary in Hindi outlining the core matter of the document.
 Do not hallucinate or add any details not explicitly visible in the document."""
+)
 
 SOCIAL_LINK_RESEARCH_PROMPT = Template(
     """You are a social-media source verification agent.

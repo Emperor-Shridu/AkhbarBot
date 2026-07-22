@@ -2,15 +2,17 @@ import logging
 from google import genai
 from google.genai import types
 from config import Config
+from models import NewsSettings
 from prompts import EDITOR_SYSTEM_PROMPT, PROFESSIONALIZE_ARTICLE_PROMPT
 
 logger = logging.getLogger(__name__)
+
 
 class EditorAgent:
     def __init__(self):
         self.client = genai.Client(api_key=Config.GEMINI_API_KEY)
 
-    async def synthesize(self, source_type: str, consolidated_context: str, settings: dict) -> str:
+    async def synthesize(self, source_type: str, consolidated_context: str, settings: NewsSettings) -> str:
         """
         Synthesizes the consolidated facts into a cohesive news report in Hindi.
         Applies strict Telegram formatting rules to ensure delivery uptime.
@@ -18,10 +20,10 @@ class EditorAgent:
         if not consolidated_context or not consolidated_context.strip():
             raise ValueError("No factual content available to generate an article.")
         
-        location = settings.get("location", "Delhi")
-        department = settings.get("department", "General")
-        
-        system_prompt = EDITOR_SYSTEM_PROMPT.substitute(location=location, department=department)
+        system_prompt = EDITOR_SYSTEM_PROMPT.substitute(
+            location=settings.location,
+            department=settings.department,
+        )
 
         user_content = (
             f"Source Pipeline: {source_type}\n"
@@ -48,14 +50,12 @@ class EditorAgent:
             logger.error(f"EditorAgent synthesis failed: {e}")
             raise e
 
-    async def professionalize(self, article: str, settings: dict) -> str:
+    async def professionalize(self, article: str, settings: NewsSettings) -> str:
         """Rewrites a draft into a polished, publish-ready Hindi news article."""
-        location = settings.get("location", "Delhi")
-        department = settings.get("department", "General")
         prompt = PROFESSIONALIZE_ARTICLE_PROMPT.substitute(
             article=article,
-            location=location,
-            department=department,
+            location=settings.location,
+            department=settings.department,
         )
 
         logger.info("EditorAgent: Professionalizing submitted Hindi article...")

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from models import NewsSettings
 
 from config import Config
 from database import get_chat_settings, get_chat_mode, get_pending_stories, get_recent_articles, init_indexes, set_chat_mode, set_pending_stories, update_chat_settings
