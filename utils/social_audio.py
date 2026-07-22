@@ -1,6 +1,9 @@
 import asyncio
 import os
 import tempfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
@@ -28,17 +31,19 @@ async def extract_audio_from_url(url: str) -> tuple[bytes, str]:
         fb_mod.FacebookIE._download_webpage = _patched_webpage
         fb_mod.FacebookIE._download_json = _patched_json
         fb_mod.FacebookIE._patched_for_impersonate = True
+        logger.info("Patched FacebookIE with impersonation targets: %s", targets)
 
     def _download() -> tuple[bytes, str]:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "source.%(ext)s")
+            curl_impersonate = None
             try:
-                from curl_cffi import impersonate as _curl_impersonate
+                from curl_cffi import impersonate as curl_impersonate
             except ImportError:
-                _curl_impersonate = None
-
-            if _curl_impersonate:
-                _patch_facebook_ie_impersonation(["chrome120"])
+                logger.warning("curl_cffi.impersonate is not available; Facebook will use default imp.")
+            
+            if curl_impersonate:
+                _patch_facebook_ie_impersonation(["chrome"])
 
             options = {
                 "format": "bestaudio/best",
